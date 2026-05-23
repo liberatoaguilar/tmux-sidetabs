@@ -47,14 +47,11 @@ bind_keys() {
     skip_nav="$(get_tmux_option "@sidetabs-skip-nav" "$DEFAULT_SKIP_NAV")"
     if [ "$skip_nav" = "on" ]; then
         # Preserve user's is_vim detection regex verbatim — mirrors their .tmux.conf.
+        # C-h is intentionally left alone: the user's own binding (select-pane -L)
+        # moves into the sidetab, which is how you enter it. We only override
+        # C-j / C-k so that, when focused IN the sidetab, they step through windows.
         local is_vim
         is_vim="ps -o state= -o comm= -t '#{pane_tty}' | grep -iqE '^[^TXZ ]+ +(\\\\S+\\\\/)?g?(view|n?vim?x?)(diff)?\$'"
-
-        # C-h: vim → forward; else → select-pane -L but skip the sidetab.
-        tmux bind-key -n 'C-h' \
-            "if-shell \"$is_vim\" \
-                'send-keys C-h' \
-                'run-shell \"$SCRIPTS_DIR/skip_sidetab_left.sh #{pane_id}\"'"
 
         # C-j: vim → forward; sidetab focused → next-window; else → select-pane -D.
         tmux bind-key -n 'C-j' \

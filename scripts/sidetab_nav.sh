@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Usage: sidetab_nav.sh <down|up> <originating_pane_id>
-# If origin pane is the sidetab → next/previous window.
+# If origin pane is the sidetab → next/previous window, keeping focus in the
+# new window's sidetab so you can keep browsing.
 # Else → fall through to the user's normal select-pane -D/-U behavior.
 set -euo pipefail
 
@@ -16,6 +17,10 @@ if pane_is_sidetab "$ORIGIN_PANE"; then
         down) tmux next-window ;;
         up)   tmux previous-window ;;
     esac
+    # Re-focus the sidetab in the now-active window for continuous browsing.
+    new_window="$(tmux display-message -p '#{window_id}')"
+    new_sidetab="$(find_sidetab_pane "$new_window")"
+    [ -n "$new_sidetab" ] && tmux select-pane -t "$new_sidetab"
 else
     case "$DIRECTION" in
         down) tmux select-pane -D ;;
