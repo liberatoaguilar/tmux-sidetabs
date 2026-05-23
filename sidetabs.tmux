@@ -8,9 +8,9 @@ source "$SCRIPTS_DIR/helpers.sh"
 
 register_hooks() {
     tmux set-hook -g after-new-window \
-        "run-shell -b '$SCRIPTS_DIR/create_sidebar.sh #{session_id} #{window_id}'"
+        "run-shell -b '$SCRIPTS_DIR/create_sidebar.sh #{window_id}'"
     tmux set-hook -g after-new-session \
-        "run-shell -b '$SCRIPTS_DIR/create_sidebar.sh #{session_id} #{window_id}'"
+        "run-shell -b '$SCRIPTS_DIR/create_sidebar.sh #{window_id}'"
     tmux set-hook -g window-renamed \
         "run-shell -b '$SCRIPTS_DIR/refresh.sh #{session_id}'"
     tmux set-hook -g session-window-changed \
@@ -27,9 +27,9 @@ register_hooks() {
     # window later widens. window-layout-changed covers both; create_sidebar
     # is idempotent and lock-guarded so this can't spawn duplicates.
     tmux set-hook -g window-layout-changed \
-        "run-shell -b '$SCRIPTS_DIR/resurrect.sh #{session_id} #{window_id}'"
+        "run-shell -b '$SCRIPTS_DIR/resurrect.sh #{window_id}'"
     tmux set-hook -g window-resized \
-        "run-shell -b '$SCRIPTS_DIR/resurrect.sh #{session_id} #{window_id}'"
+        "run-shell -b '$SCRIPTS_DIR/resurrect.sh #{window_id}'"
 }
 
 bind_keys() {
@@ -71,9 +71,9 @@ bind_keys() {
 }
 
 initial_setup() {
-    tmux list-windows -a -F '#{session_id} #{window_id}' 2>/dev/null \
-        | while read -r sid wid; do
-            "$SCRIPTS_DIR/create_sidebar.sh" "$sid" "$wid"
+    tmux list-windows -a -F '#{window_id}' 2>/dev/null \
+        | while read -r wid; do
+            "$SCRIPTS_DIR/create_sidebar.sh" "$wid"
           done
 }
 
