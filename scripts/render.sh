@@ -36,7 +36,8 @@ trap 'printf "\033[?25h"; exit 0' EXIT INT TERM
 
 # --- Theme -----------------------------------------------------------------
 ESC="$(printf '\033')"
-ARROW="$(printf '\xee\x82\xb0')"   # U+E0B0 powerline right separator
+ARROW="$(printf '\xee\x82\xb0')"   # U+E0B0 powerline right cap (solid)
+THIN="$(printf '\xee\x82\xb1')"    # U+E0B1 powerline right separator (thin)
 RULE="$(printf '\xe2\x94\x80')"    # U+2500 box-drawing horizontal
 TAB="$(printf '\t')"
 BOLD="${ESC}[1m"; NOBOLD="${ESC}[22m"; RESET="${ESC}[0m"
@@ -49,7 +50,7 @@ idle_fg="$(get_tmux_option '@sidetabs-fg' '#d8dee9')"
 bell_bg="$(get_tmux_option '@sidetabs-bell-bg' '#bf616a')"
 bell_fg="$(get_tmux_option '@sidetabs-bell-fg' '#eceff4')"
 activity_fg="$(get_tmux_option '@sidetabs-activity-fg' '#ebcb8b')"
-rule_fg="$(get_tmux_option '@sidetabs-rule-fg' '#3b4252')"
+rule_fg="$(get_tmux_option '@sidetabs-rule-fg' '#616e88')"
 
 # A segment paints bg+fg (no bold); its cap paints the segment's bg as fg over a
 # default bg so the trailing arrow "points" out of the colored block.
@@ -98,9 +99,9 @@ emit_row() {
     pad=$((avail - used)); [ "$pad" -lt 0 ] && pad=0
     spaces="$(printf '%*s' "$pad" '')"
 
-    # seg ' ' BOLD idx NOBOLD ' ' arrow(mid) nm spaces cap arrow(trailing) reset
+    # seg ' ' BOLD idx NOBOLD ' ' thin-sep nm spaces cap solid-arrow reset
     printf '%s %s%s%s %s%s%s%s%s%s\n' \
-        "$seg" "$BOLD" "$idx" "$NOBOLD" "$ARROW" "$nm" "$spaces" "$cap" "$ARROW" "$RESET"
+        "$seg" "$BOLD" "$idx" "$NOBOLD" "$THIN" "$nm" "$spaces" "$cap" "$ARROW" "$RESET"
 }
 
 emit_lines() {
