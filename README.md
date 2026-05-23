@@ -3,9 +3,12 @@
 A persistent left-side window-list sidebar for tmux. Inspired by [cmux](https://cmux.com/)'s vertical tabs.
 
 - Auto-spawns a thin pane on the left of every window.
-- Lists the windows in the current session. The active window is drawn as a
-  full-width highlighted bar (nord palette by default); activity is flagged in yellow.
-- `prefix + Tab` toggles between expanded (`▸1 main`) and collapsed icon-strip (`▸1`) modes.
+- Lists the windows in the current session as powerline pills (` N › name flags`),
+  with a session-name header on top. The active window is highlighted, a window
+  with a pending bell turns red, and activity shows in yellow (nord palette).
+- Under the active window, a small summary shows its main pane's command and
+  working directory (cmux-style). Toggle with `@sidetabs-summary`.
+- `prefix + Tab` toggles between expanded and a collapsed icon-strip.
 - `C-h` (your own vim-aware binding) moves left into the sidebar; `C-l` moves back out.
 - When focused inside the sidebar, `C-j` / `C-k` step to the next / previous window
   and keep focus in the sidebar so you can keep browsing.
@@ -52,10 +55,18 @@ and all three forward to vim when a vim-like process has focus.
 | `@sidetabs-collapsed-width` | `4` | Cols in collapsed mode |
 | `@sidetabs-skip-nav` | `on` | `off` to leave `C-j` / `C-k` untouched |
 | `@sidetabs-uninstall-key` | (unset) | Prefix key to uninstall in-session |
+| `@sidetabs-summary` | `on` | `off` to hide the summary under the active window |
 | `@sidetabs-active-bg` | `#88c0d0` | Active-row background (nord8) |
 | `@sidetabs-active-fg` | `#2e3440` | Active-row text (nord0) |
+| `@sidetabs-idle-bg` | `#4c566a` | Idle-row background (nord3) |
 | `@sidetabs-fg` | `#d8dee9` | Idle-row text (nord4) |
-| `@sidetabs-activity-fg` | `#ebcb8b` | Activity marker color (nord13) |
+| `@sidetabs-bell-bg` | `#bf616a` | Bell-row background (nord11) |
+| `@sidetabs-bell-fg` | `#eceff4` | Bell-row text (nord6) |
+| `@sidetabs-activity-fg` | `#ebcb8b` | Activity text color (nord13) |
+| `@sidetabs-header-bg` | `#5e81ac` | Session-name header background (nord10) |
+| `@sidetabs-header-fg` | `#2e3440` | Session-name header text (nord0) |
+| `@sidetabs-summary-fg` | `#81a1c1` | Summary text color (nord9) |
+| `@sidetabs-rule-fg` | `#616e88` | Divider rule color |
 
 Example:
 
