@@ -6,8 +6,14 @@ SCRIPTS_DIR="$CURRENT_DIR/scripts"
 source "$SCRIPTS_DIR/variables.sh"
 source "$SCRIPTS_DIR/helpers.sh"
 
-# Placeholder: real wiring lands in later tasks.
+initial_setup() {
+    tmux list-windows -a -F '#{session_id} #{window_id}' 2>/dev/null \
+        | while read -r sid wid; do
+            "$SCRIPTS_DIR/create_sidebar.sh" "$sid" "$wid"
+          done
+}
+
 main() {
-    :  # no-op for now
+    initial_setup
 }
 main
