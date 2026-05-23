@@ -42,9 +42,16 @@ run-shell '/path/to/tmux-sidetabs/sidetabs.tmux'
 | `prefix + Tab` | Toggle the sidetab between expanded and collapsed |
 | `C-h` / `C-l` | Move into / out of the sidebar (your existing vim-style bindings) |
 | `C-j` / `C-k` (in sidebar) | Next / previous window (focus stays in the sidebar) |
+| `C-n` (in sidebar) | New window (prompts for a name; empty = unnamed) |
+| `C-r` (in sidebar) | Rename the current window (prefilled) |
+| `C-x` (in sidebar) | Kill the current window (with `y/n` confirm) |
+| `M-k` / `M-j` (in sidebar) | Move the current window up / down (reorder) |
 
-`C-j` / `C-k` outside the sidebar keep their normal `select-pane -D/-U` behavior,
-and all three forward to vim when a vim-like process has focus.
+`C-j` / `C-k` outside the sidebar keep their normal `select-pane -D/-U` behavior
+(and forward to vim when a vim-like process has focus). The window-management
+keys (`C-n` `C-r` `C-x` `M-k` `M-j`) only act when the sidebar is focused —
+elsewhere they pass straight through to the focused pane, so your shell's `C-r`
+reverse-search, `C-n` completion, etc. are untouched.
 
 ## Configuration
 
