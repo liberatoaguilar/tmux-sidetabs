@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# Compact system info for the tmux status bar (macOS): load, memory %, battery %.
+# Compact system info for the tmux status bar (macOS), with Nerd Font icons:
+#   U+F0E4 (tachometer) load · U+F2DB (microchip) memory% · U+F0A0 (hdd) disk%
 # Referenced from the status line via #(...). Always prints something; never errors.
+
+ICON_LOAD="$(printf '\xef\x83\xa4')"   # U+F0E4
+ICON_MEM="$(printf '\xef\x8b\x9b')"    # U+F2DB
+ICON_DISK="$(printf '\xef\x82\xa0')"   # U+F0A0
 
 load="$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}')"
 [ -z "$load" ] && load="?"
@@ -18,8 +23,9 @@ if [ -n "$pagesize" ] && [ -n "$total" ] && [ "$total" -gt 0 ]; then
     [ "$used" -gt 0 ] && mem="$(( used * 100 / total ))%"
 fi
 
-bat="$(pmset -g batt 2>/dev/null | grep -Eo '[0-9]+%' | head -1)"
+# Disk usage of the writable data volume (falls back to /).
+disk="$(df -h /System/Volumes/Data 2>/dev/null | awk 'NR==2{print $5}')"
+[ -z "$disk" ] && disk="$(df -h / 2>/dev/null | awk 'NR==2{print $5}')"
+[ -z "$disk" ] && disk="?"
 
-out="LOAD ${load}  MEM ${mem}"
-[ -n "$bat" ] && out="${out}  BAT ${bat}"
-printf '%s' "$out"
+printf '%s %s  %s %s  %s %s' "$ICON_LOAD" "$load" "$ICON_MEM" "$mem" "$ICON_DISK" "$disk"
