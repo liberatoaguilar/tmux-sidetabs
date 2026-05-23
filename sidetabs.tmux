@@ -48,6 +48,18 @@ bind_keys() {
             "if-shell \"$is_vim\" \
                 'send-keys C-h' \
                 'run-shell \"$SCRIPTS_DIR/skip_sidetab_left.sh #{pane_id}\"'"
+
+        # C-j: vim → forward; sidetab focused → next-window; else → select-pane -D.
+        tmux bind-key -n 'C-j' \
+            "if-shell \"$is_vim\" \
+                'send-keys C-j' \
+                'run-shell \"$SCRIPTS_DIR/sidetab_nav.sh down #{pane_id}\"'"
+
+        # C-k: vim → forward; sidetab focused → previous-window; else → select-pane -U.
+        tmux bind-key -n 'C-k' \
+            "if-shell \"$is_vim\" \
+                'send-keys C-k' \
+                'run-shell \"$SCRIPTS_DIR/sidetab_nav.sh up #{pane_id}\"'"
     fi
 }
 
