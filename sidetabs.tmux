@@ -25,6 +25,18 @@ register_hooks() {
         "run-shell -b '$SCRIPTS_DIR/refresh.sh #{session_id}'"
 }
 
+bind_keys() {
+    local toggle_key
+    toggle_key="$(get_tmux_option "@sidetabs-toggle-key" "$DEFAULT_TOGGLE_KEY")"
+    tmux bind-key "$toggle_key" run-shell "$SCRIPTS_DIR/toggle_collapse.sh"
+
+    local uninstall_key
+    uninstall_key="$(get_tmux_option "@sidetabs-uninstall-key" "")"
+    if [ -n "$uninstall_key" ]; then
+        tmux bind-key "$uninstall_key" run-shell "$SCRIPTS_DIR/uninstall.sh"
+    fi
+}
+
 initial_setup() {
     tmux list-windows -a -F '#{session_id} #{window_id}' 2>/dev/null \
         | while read -r sid wid; do
@@ -34,6 +46,7 @@ initial_setup() {
 
 main() {
     register_hooks
+    bind_keys
     initial_setup
 }
 main
