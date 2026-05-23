@@ -7,8 +7,10 @@
 # content is therefore invisible, which also lets us recover transparently when
 # tmux repaints the pane (e.g. right after the pane is created or resized).
 #
-# The active window is drawn as a full-width highlighted bar (nord palette by
-# default); idle windows are plain colored text; activity is flagged in yellow.
+# Each window is drawn as a stacked powerline segment ( idx  name flags <cap> ).
+# State colors (nord by default): bell = red, active = teal, activity = yellow
+# text, idle = grey. No marker glyph — the highlight carries it. A blank line
+# sits above the first window.
 
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$CURRENT_DIR/variables.sh"
@@ -33,55 +35,67 @@ trap 'printf "\033[?25h"; exit 0' EXIT INT TERM
 
 # --- Theme -----------------------------------------------------------------
 ESC="$(printf '\033')"
+SEP="$(printf '\xee\x82\xb0')"   # U+E0B0 powerline right separator
+TAB="$(printf '\t')"
 hex_rgb() { local h="${1#\#}"; printf '%d;%d;%d' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}"; }
 
 active_bg="$(get_tmux_option '@sidetabs-active-bg' '#88c0d0')"
 active_fg="$(get_tmux_option '@sidetabs-active-fg' '#2e3440')"
+idle_bg="$(get_tmux_option '@sidetabs-idle-bg' '#4c566a')"
 idle_fg="$(get_tmux_option '@sidetabs-fg' '#d8dee9')"
+bell_bg="$(get_tmux_option '@sidetabs-bell-bg' '#bf616a')"
+bell_fg="$(get_tmux_option '@sidetabs-bell-fg' '#eceff4')"
 activity_fg="$(get_tmux_option '@sidetabs-activity-fg' '#ebcb8b')"
 
-SGR_ACTIVE="${ESC}[1;48;2;$(hex_rgb "$active_bg");38;2;$(hex_rgb "$active_fg")m"
-SGR_IDLE="${ESC}[38;2;$(hex_rgb "$idle_fg")m"
-SGR_ACT="${ESC}[1;38;2;$(hex_rgb "$activity_fg")m"
+# A segment paints bg+fg; its cap paints the segment's bg as fg over a default bg
+# so the powerline arrow "points" out of the colored block.
+seg_sgr() { printf '%s[1;48;2;%s;38;2;%sm' "$ESC" "$(hex_rgb "$1")" "$(hex_rgb "$2")"; }
+cap_sgr() { printf '%s[49;38;2;%sm' "$ESC" "$(hex_rgb "$1")"; }
 RESET="${ESC}[0m"
 
+SEG_ACTIVE="$(seg_sgr "$active_bg" "$active_fg")"; CAP_ACTIVE="$(cap_sgr "$active_bg")"
+SEG_IDLE="$(seg_sgr "$idle_bg" "$idle_fg")";       CAP_IDLE="$(cap_sgr "$idle_bg")"
+SEG_BELL="$(seg_sgr "$bell_bg" "$bell_fg")";       CAP_BELL="$(cap_sgr "$bell_bg")"
+SEG_ACT="$(seg_sgr "$idle_bg" "$activity_fg")";    CAP_ACT="$(cap_sgr "$idle_bg")"
+
 emit_row() {
-    local active="$1" activity="$2" label="$3" width="$4"
-    local marker body maxbody pad spaces
-    if [ "$active" = "1" ]; then marker="▸"
-    elif [ "$activity" = "1" ]; then marker="•"
-    else marker=" "; fi
-    maxbody=$((width - 1)); [ "$maxbody" -lt 0 ] && maxbody=0
-    body="${label:0:maxbody}"
-    if [ "$active" = "1" ]; then
-        pad=$((width - 1 - ${#body})); [ "$pad" -lt 0 ] && pad=0
-        spaces="$(printf '%*s' "$pad" '')"
-        printf '%s%s%s%s%s\n' "$SGR_ACTIVE" "$marker" "$body" "$spaces" "$RESET"
-    elif [ "$activity" = "1" ]; then
-        printf '%s%s%s%s\n' "$SGR_ACT" "$marker" "$body" "$RESET"
-    else
-        printf '%s%s%s%s\n' "$SGR_IDLE" "$marker" "$body" "$RESET"
-    fi
+    local active="$1" bell="$2" activity="$3" idx="$4" flags="$5" name="$6" width="$7"
+    local seg cap text maxtext
+    if [ "$bell" = "1" ]; then seg="$SEG_BELL"; cap="$CAP_BELL"
+    elif [ "$active" = "1" ]; then seg="$SEG_ACTIVE"; cap="$CAP_ACTIVE"
+    elif [ "$activity" = "1" ]; then seg="$SEG_ACT"; cap="$CAP_ACT"
+    else seg="$SEG_IDLE"; cap="$CAP_IDLE"; fi
+
+    text=" ${idx}  ${name}"
+    [ -n "$flags" ] && text="${text} ${flags}"
+    text="${text} "
+    # Leave one column for the cap glyph.
+    maxtext=$((width - 1)); [ "$maxtext" -lt 0 ] && maxtext=0
+    text="${text:0:maxtext}"
+
+    printf '%s%s%s%s%s\n' "$seg" "$text" "$cap" "$SEP" "$RESET"
 }
 
 emit_lines() {
-    local collapsed width
+    local collapsed width fmt
     collapsed="$(get_session_option "$SESSION_ID" "$COLLAPSED_OPTION" "0")"
     width="$(tmux display-message -p -t "$MY_PANE_ID" '#{pane_width}' 2>/dev/null)"
     [ -z "$width" ] && width=4
+
+    # One blank row above the first window.
+    printf '\n'
+
     if [ "$collapsed" = "1" ]; then
-        tmux list-windows -t "$SESSION_ID" \
-            -F '#{window_active} #{window_activity_flag} #{window_index}' \
-            2>/dev/null \
-            | while read -r active activity idx; do
-                emit_row "$active" "$activity" "$idx" "$width"
+        fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_index}"
+        tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null \
+            | while IFS="$TAB" read -r active bell activity idx; do
+                emit_row "$active" "$bell" "$activity" "$idx" "" "" "$width"
               done
     else
-        tmux list-windows -t "$SESSION_ID" \
-            -F '#{window_active} #{window_activity_flag} #{window_index} #{window_name}' \
-            2>/dev/null \
-            | while read -r active activity idx name; do
-                emit_row "$active" "$activity" "$idx $name" "$width"
+        fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_index}${TAB}#{window_flags}${TAB}#{window_name}"
+        tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null \
+            | while IFS="$TAB" read -r active bell activity idx flags name; do
+                emit_row "$active" "$bell" "$activity" "$idx" "$flags" "$name" "$width"
               done
     fi
 }
