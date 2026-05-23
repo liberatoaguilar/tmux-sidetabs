@@ -35,6 +35,20 @@ bind_keys() {
     if [ -n "$uninstall_key" ]; then
         tmux bind-key "$uninstall_key" run-shell "$SCRIPTS_DIR/uninstall.sh"
     fi
+
+    local skip_nav
+    skip_nav="$(get_tmux_option "@sidetabs-skip-nav" "$DEFAULT_SKIP_NAV")"
+    if [ "$skip_nav" = "on" ]; then
+        # Preserve user's is_vim detection regex verbatim — mirrors their .tmux.conf.
+        local is_vim
+        is_vim="ps -o state= -o comm= -t '#{pane_tty}' | grep -iqE '^[^TXZ ]+ +(\\\\S+\\\\/)?g?(view|n?vim?x?)(diff)?\$'"
+
+        # C-h: vim → forward; else → select-pane -L but skip the sidetab.
+        tmux bind-key -n 'C-h' \
+            "if-shell \"$is_vim\" \
+                'send-keys C-h' \
+                'run-shell \"$SCRIPTS_DIR/skip_sidetab_left.sh #{pane_id}\"'"
+    fi
 }
 
 initial_setup() {
