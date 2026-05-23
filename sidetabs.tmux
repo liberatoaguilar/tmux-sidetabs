@@ -23,6 +23,13 @@ register_hooks() {
         "run-shell -b '$SCRIPTS_DIR/refresh.sh #{session_id}'"
     tmux set-hook -g alert-activity \
         "run-shell -b '$SCRIPTS_DIR/refresh.sh #{session_id}'"
+    # Recreate a sidetab if it disappears (manual kill) or if a too-narrow
+    # window later widens. window-layout-changed covers both; create_sidebar
+    # is idempotent and lock-guarded so this can't spawn duplicates.
+    tmux set-hook -g window-layout-changed \
+        "run-shell -b '$SCRIPTS_DIR/resurrect.sh #{session_id} #{window_id}'"
+    tmux set-hook -g window-resized \
+        "run-shell -b '$SCRIPTS_DIR/resurrect.sh #{session_id} #{window_id}'"
 }
 
 bind_keys() {

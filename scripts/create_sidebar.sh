@@ -14,6 +14,21 @@ if window_has_sidetab "$WINDOW_ID"; then
     exit 0
 fi
 
+# Atomic per-window lock: mkdir succeeds for exactly one process. This
+# serializes concurrent creations triggered by overlapping hooks
+# (after-new-window + window-layout-changed both fire when a window is born),
+# preventing duplicate sidetabs.
+LOCK_DIR="${TMPDIR:-/tmp}/sidetabs_lock_${WINDOW_ID//[^a-zA-Z0-9]/_}"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    exit 0
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+
+# Re-check after acquiring the lock — a prior holder may have just created one.
+if window_has_sidetab "$WINDOW_ID"; then
+    exit 0
+fi
+
 expanded_width="$(get_tmux_option "@sidetabs-expanded-width" "$DEFAULT_EXPANDED_WIDTH")"
 collapsed_width="$(get_tmux_option "@sidetabs-collapsed-width" "$DEFAULT_COLLAPSED_WIDTH")"
 collapsed="$(get_session_option "$SESSION_ID" "$COLLAPSED_OPTION" "0")"
