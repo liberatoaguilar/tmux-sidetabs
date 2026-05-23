@@ -27,7 +27,7 @@ register_hooks() {
     # window later widens. window-layout-changed covers both; create_sidebar
     # is idempotent and lock-guarded so this can't spawn duplicates.
     tmux set-hook -g window-layout-changed \
-        "run-shell -b '$SCRIPTS_DIR/resurrect.sh #{window_id}'"
+        "run-shell -b '$SCRIPTS_DIR/layout_changed.sh #{window_id}'"
     tmux set-hook -g window-resized \
         "run-shell -b '$SCRIPTS_DIR/resurrect.sh #{window_id}'"
 }

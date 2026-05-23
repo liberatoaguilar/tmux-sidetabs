@@ -8,7 +8,8 @@ source "$CURRENT_DIR/helpers.sh"
 
 SESSION_ID="$(tmux display-message -p '#{session_id}')"
 
-expanded_width="$(get_tmux_option "@sidetabs-expanded-width" "$DEFAULT_EXPANDED_WIDTH")"
+default_w="$(get_tmux_option "@sidetabs-expanded-width" "$DEFAULT_EXPANDED_WIDTH")"
+expanded_width="$(get_session_option "$SESSION_ID" "$WIDTH_OPTION" "$default_w")"
 collapsed_width="$(get_tmux_option "@sidetabs-collapsed-width" "$DEFAULT_COLLAPSED_WIDTH")"
 
 current="$(get_session_option "$SESSION_ID" "$COLLAPSED_OPTION" "0")"

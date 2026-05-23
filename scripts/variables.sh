@@ -6,6 +6,7 @@ RENDER_PID_OPTION="@sidetabs_render_pid"
 
 # Per-session user options
 COLLAPSED_OPTION="@sidetabs_collapsed"
+WIDTH_OPTION="@sidetabs_width"                   # current expanded width (synced)
 LAST_REFRESH_OPTION="@sidetabs_last_refresh_ms"  # debounce stamp
 
 # Defaults (overridable via user options)

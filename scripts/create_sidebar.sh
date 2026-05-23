@@ -39,7 +39,8 @@ if window_has_sidetab "$WINDOW_ID"; then
     exit 0
 fi
 
-expanded_width="$(get_tmux_option "@sidetabs-expanded-width" "$DEFAULT_EXPANDED_WIDTH")"
+default_w="$(get_tmux_option "@sidetabs-expanded-width" "$DEFAULT_EXPANDED_WIDTH")"
+expanded_width="$(get_session_option "$SESSION_ID" "$WIDTH_OPTION" "$default_w")"
 collapsed_width="$(get_tmux_option "@sidetabs-collapsed-width" "$DEFAULT_COLLAPSED_WIDTH")"
 collapsed="$(get_session_option "$SESSION_ID" "$COLLAPSED_OPTION" "0")"
 [ "$collapsed" = "1" ] && width="$collapsed_width" || width="$expanded_width"
