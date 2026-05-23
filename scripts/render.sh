@@ -42,6 +42,8 @@ ARROW="$(printf '\xee\x82\xb0')"   # U+E0B0 powerline right cap (solid)
 THIN="$(printf '\xee\x82\xb1')"    # U+E0B1 powerline right separator (thin)
 RULE="$(printf '\xe2\x94\x80')"    # U+2500 box-drawing horizontal
 TAB="$(printf '\t')"
+FS="$(printf '\037')"              # ASCII US (0x1F): non-whitespace field sep so
+                                   # `read` preserves empty fields (e.g. no flags)
 BOLD="${ESC}[1m"; NOBOLD="${ESC}[22m"; RESET="${ESC}[0m"
 hex_rgb() { local h="${1#\#}"; printf '%d;%d;%d' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}"; }
 
@@ -134,11 +136,11 @@ emit_summary_line() {
 emit_summary() {
     local wid="$1" width="$2" info cmd path
     info="$(tmux list-panes -t "$wid" \
-        -F "#{pane_active}${TAB}#{@is_sidetab}${TAB}#{pane_current_command}${TAB}#{pane_current_path}" \
-        2>/dev/null | awk -F"$TAB" '$2 != "1"' | sort -r | head -1)"
+        -F "#{pane_active}${FS}#{@is_sidetab}${FS}#{pane_current_command}${FS}#{pane_current_path}" \
+        2>/dev/null | awk -F"$FS" '$2 != "1"' | sort -r | head -1)"
     [ -z "$info" ] && return
-    cmd="$(printf '%s' "$info" | cut -d"$TAB" -f3)"
-    path="$(printf '%s' "$info" | cut -d"$TAB" -f4)"
+    cmd="$(printf '%s' "$info" | cut -d"$FS" -f3)"
+    path="$(printf '%s' "$info" | cut -d"$FS" -f4)"
     case "$path" in "$HOME"*) path="~${path#$HOME}";; esac
     # Keep the tail of the path (basename is the useful part) when it's too long.
     local maxpath=$((width - 2)); [ "$maxpath" -lt 0 ] && maxpath=0
@@ -163,9 +165,9 @@ emit_lines() {
 
     if [ "$collapsed" = "1" ]; then
         printf '\n'
-        fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_index}"
+        fmt="#{window_active}${FS}#{window_bell_flag}${FS}#{window_activity_flag}${FS}#{window_index}"
         tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null \
-            | while IFS="$TAB" read -r active bell activity idx; do
+            | while IFS="$FS" read -r active bell activity idx; do
                 emit_row "$active" "$bell" "$activity" "$idx" "" "" "$width" 1
               done
         return
@@ -174,9 +176,9 @@ emit_lines() {
     sname="$(tmux display-message -p -t "$SESSION_ID" '#{session_name}' 2>/dev/null)"
     emit_header "$sname" "$width"
 
-    fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_index}${TAB}#{window_flags}${TAB}#{window_id}${TAB}#{window_name}"
+    fmt="#{window_active}${FS}#{window_bell_flag}${FS}#{window_activity_flag}${FS}#{window_index}${FS}#{window_flags}${FS}#{window_id}${FS}#{window_name}"
     tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null \
-        | while IFS="$TAB" read -r active bell activity idx flags wid name; do
+        | while IFS="$FS" read -r active bell activity idx flags wid name; do
             printf '%s\n' "$rule"
             emit_row "$active" "$bell" "$activity" "$idx" "$flags" "$name" "$width" 0
             if [ "$active" = "1" ] && [ "$summary_on" = "on" ]; then
