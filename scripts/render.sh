@@ -7,11 +7,13 @@
 # content is therefore invisible, which also lets us recover transparently when
 # tmux repaints the pane (e.g. right after the pane is created or resized).
 #
-# Each window is a full-width powerline pill:  ` N ‹arrow› name flags … ‹cap› `
-# All pills are the same width so the trailing caps line up. Only the number is
-# bold. State colors (nord by default): bell = red, active = teal, activity =
-# yellow text, idle = grey. A blank line sits above the first window and a thin
-# rule divides the entries.
+# Layout (expanded):
+#   [ session-name ‹cap› ]          header pill (like status-left)
+#   ────────────────────            rule
+#   ` N ‹thin› name flags … ‹cap›`  one full-width pill per window
+#   <summary lines>                 under the ACTIVE window only
+# State colors (nord by default): bell = red, active = teal, activity = yellow
+# text, idle = grey. Only the number is bold.
 
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$CURRENT_DIR/variables.sh"
@@ -51,6 +53,10 @@ bell_bg="$(get_tmux_option '@sidetabs-bell-bg' '#bf616a')"
 bell_fg="$(get_tmux_option '@sidetabs-bell-fg' '#eceff4')"
 activity_fg="$(get_tmux_option '@sidetabs-activity-fg' '#ebcb8b')"
 rule_fg="$(get_tmux_option '@sidetabs-rule-fg' '#616e88')"
+header_bg="$(get_tmux_option '@sidetabs-header-bg' '#5e81ac')"
+header_fg="$(get_tmux_option '@sidetabs-header-fg' '#2e3440')"
+summary_fg="$(get_tmux_option '@sidetabs-summary-fg' '#81a1c1')"
+summary_on="$(get_tmux_option '@sidetabs-summary' 'on')"
 
 # A segment paints bg+fg (no bold); its cap paints the segment's bg as fg over a
 # default bg so the trailing arrow "points" out of the colored block.
@@ -61,7 +67,21 @@ SEG_ACTIVE="$(seg_sgr "$active_bg" "$active_fg")"; CAP_ACTIVE="$(cap_sgr "$activ
 SEG_IDLE="$(seg_sgr "$idle_bg" "$idle_fg")";       CAP_IDLE="$(cap_sgr "$idle_bg")"
 SEG_BELL="$(seg_sgr "$bell_bg" "$bell_fg")";       CAP_BELL="$(cap_sgr "$bell_bg")"
 SEG_ACT="$(seg_sgr "$idle_bg" "$activity_fg")";    CAP_ACT="$(cap_sgr "$idle_bg")"
+SEG_HDR="$(seg_sgr "$header_bg" "$header_fg")";    CAP_HDR="$(cap_sgr "$header_bg")"
 RULE_SGR="${ESC}[49;38;2;$(hex_rgb "$rule_fg")m"
+SUMMARY_SGR="${ESC}[49;38;2;$(hex_rgb "$summary_fg")m"
+
+# A full-width header pill (bold) for the session name.
+emit_header() {
+    local label="$1" width="$2" avail used pad spaces
+    avail=$((width - 1)); [ "$avail" -lt 0 ] && avail=0
+    label=" ${label} "
+    used=${#label}
+    if [ "$used" -gt "$avail" ]; then label="${label:0:avail}"; used="$avail"; fi
+    pad=$((avail - used)); [ "$pad" -lt 0 ] && pad=0
+    spaces="$(printf '%*s' "$pad" '')"
+    printf '%s%s%s%s%s%s%s%s\n' "$SEG_HDR" "$BOLD" "$label" "$NOBOLD" "$spaces" "$CAP_HDR" "$ARROW" "$RESET"
+}
 
 # emit_row <active> <bell> <activity> <idx> <flags> <name> <width> <collapsed>
 emit_row() {
@@ -72,11 +92,9 @@ emit_row() {
     elif [ "$activity" = "1" ]; then seg="$SEG_ACT"; cap="$CAP_ACT"
     else seg="$SEG_IDLE"; cap="$CAP_IDLE"; fi
 
-    avail=$((width - 1))            # reserve the last column for the trailing cap
-    [ "$avail" -lt 0 ] && avail=0
+    avail=$((width - 1)); [ "$avail" -lt 0 ] && avail=0
 
     if [ "$collapsed" = "1" ]; then
-        # ` N ` padded to the column, then cap.
         used=$((1 + ${#idx}))
         pad=$((avail - used)); [ "$pad" -lt 0 ] && pad=0
         spaces="$(printf '%*s' "$pad" '')"
@@ -88,7 +106,6 @@ emit_row() {
     nm=" ${name}"
     [ -n "$flags" ] && nm="${nm} ${flags}"
     nm="${nm} "
-    # Visible cols before padding: " " + idx + " " + arrow(1) + nm
     used=$((1 + ${#idx} + 1 + 1 + ${#nm}))
     if [ "$used" -gt "$avail" ]; then
         local over=$((used - avail)) newlen
@@ -99,13 +116,43 @@ emit_row() {
     pad=$((avail - used)); [ "$pad" -lt 0 ] && pad=0
     spaces="$(printf '%*s' "$pad" '')"
 
-    # seg ' ' BOLD idx NOBOLD ' ' thin-sep nm spaces cap solid-arrow reset
     printf '%s %s%s%s %s%s%s%s%s%s\n' \
         "$seg" "$BOLD" "$idx" "$NOBOLD" "$THIN" "$nm" "$spaces" "$cap" "$ARROW" "$RESET"
 }
 
+# One dim, truncated summary line.
+emit_summary_line() {
+    local text="$1" width="$2" maxt
+    maxt=$((width - 1)); [ "$maxt" -lt 0 ] && maxt=0
+    text=" ${text}"
+    text="${text:0:maxt}"
+    printf '%s%s%s\n' "$SUMMARY_SGR" "$text" "$RESET"
+}
+
+# Summary under the active window: working dir + foreground command of its main
+# (non-sidetab) pane — preferring the focused pane.
+emit_summary() {
+    local wid="$1" width="$2" info cmd path
+    info="$(tmux list-panes -t "$wid" \
+        -F "#{pane_active}${TAB}#{@is_sidetab}${TAB}#{pane_current_command}${TAB}#{pane_current_path}" \
+        2>/dev/null | awk -F"$TAB" '$2 != "1"' | sort -r | head -1)"
+    [ -z "$info" ] && return
+    cmd="$(printf '%s' "$info" | cut -d"$TAB" -f3)"
+    path="$(printf '%s' "$info" | cut -d"$TAB" -f4)"
+    case "$path" in "$HOME"*) path="~${path#$HOME}";; esac
+    # Keep the tail of the path (basename is the useful part) when it's too long.
+    local maxpath=$((width - 2)); [ "$maxpath" -lt 0 ] && maxpath=0
+    if [ "${#path}" -gt "$maxpath" ]; then
+        local keep=$((maxpath - 1)); [ "$keep" -lt 0 ] && keep=0
+        local start=$(( ${#path} - keep ))
+        path="…${path:start}"
+    fi
+    [ -n "$cmd" ] && emit_summary_line "$cmd" "$width"
+    [ -n "$path" ] && emit_summary_line "$path" "$width"
+}
+
 emit_lines() {
-    local collapsed width fmt rule first i
+    local collapsed width fmt rule i sname
     collapsed="$(get_session_option "$SESSION_ID" "$COLLAPSED_OPTION" "0")"
     width="$(tmux display-message -p -t "$MY_PANE_ID" '#{pane_width}' 2>/dev/null)"
     [ -z "$width" ] && width=4
@@ -114,24 +161,28 @@ emit_lines() {
     while [ "$i" -lt "$width" ]; do rule="${rule}${RULE}"; i=$((i + 1)); done
     rule="${RULE_SGR}${rule}${RESET}"
 
-    printf '\n'   # one blank row above the first window
-
     if [ "$collapsed" = "1" ]; then
+        printf '\n'
         fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_index}"
         tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null \
             | while IFS="$TAB" read -r active bell activity idx; do
                 emit_row "$active" "$bell" "$activity" "$idx" "" "" "$width" 1
               done
-    else
-        fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_index}${TAB}#{window_flags}${TAB}#{window_name}"
-        first=1
-        tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null \
-            | while IFS="$TAB" read -r active bell activity idx flags name; do
-                [ "$first" -eq 0 ] && printf '%s\n' "$rule"
-                first=0
-                emit_row "$active" "$bell" "$activity" "$idx" "$flags" "$name" "$width" 0
-              done
+        return
     fi
+
+    sname="$(tmux display-message -p -t "$SESSION_ID" '#{session_name}' 2>/dev/null)"
+    emit_header "$sname" "$width"
+
+    fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_index}${TAB}#{window_flags}${TAB}#{window_id}${TAB}#{window_name}"
+    tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null \
+        | while IFS="$TAB" read -r active bell activity idx flags wid name; do
+            printf '%s\n' "$rule"
+            emit_row "$active" "$bell" "$activity" "$idx" "$flags" "$name" "$width" 0
+            if [ "$active" = "1" ] && [ "$summary_on" = "on" ]; then
+                emit_summary "$wid" "$width"
+            fi
+          done
 }
 
 draw() {
