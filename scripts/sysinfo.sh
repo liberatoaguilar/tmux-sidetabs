@@ -6,6 +6,7 @@
 ICON_LOAD="$(printf '\xef\x83\xa4')"   # U+F0E4
 ICON_MEM="$(printf '\xef\x8b\x9b')"    # U+F2DB
 ICON_DISK="$(printf '\xef\x82\xa0')"   # U+F0A0
+SEP="$(printf '\xee\x82\xb1')"         # U+E0B1 thin powerline separator
 
 load="$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}')"
 [ -z "$load" ] && load="?"
@@ -28,4 +29,5 @@ disk="$(df -h /System/Volumes/Data 2>/dev/null | awk 'NR==2{print $5}')"
 [ -z "$disk" ] && disk="$(df -h / 2>/dev/null | awk 'NR==2{print $5}')"
 [ -z "$disk" ] && disk="?"
 
-printf '%s %s  %s %s  %s %s' "$ICON_LOAD" "$load" "$ICON_MEM" "$mem" "$ICON_DISK" "$disk"
+printf '%s %s %s %s %s %s %s %s' \
+    "$ICON_LOAD" "$load" "$SEP" "$ICON_MEM" "$mem" "$SEP" "$ICON_DISK" "$disk"
