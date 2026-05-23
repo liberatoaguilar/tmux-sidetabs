@@ -28,8 +28,8 @@ tmux unbind-key "$toggle_key" 2>/dev/null || true
 uninstall_key="$(get_tmux_option "@sidetabs-uninstall-key" "")"
 [ -n "$uninstall_key" ] && tmux unbind-key "$uninstall_key" 2>/dev/null || true
 
-# Unbind the navigation overrides (C-h is left to the user's own binding).
-for k in 'C-j' 'C-k'; do
+# Unbind the navigation + window-management overrides (C-h is left to the user's).
+for k in 'C-j' 'C-k' 'C-n' 'C-r' 'C-x' 'M-j' 'M-k'; do
     tmux unbind-key -n "$k" 2>/dev/null || true
 done
 

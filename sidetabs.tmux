@@ -64,6 +64,11 @@ bind_keys() {
             "if-shell \"$is_vim\" \
                 'send-keys C-k' \
                 'run-shell \"$SCRIPTS_DIR/sidetab_nav.sh up #{pane_id}\"'"
+
+        # Sidebar-focused window management (C-n new, C-r rename, C-x kill,
+        # M-k/M-j reorder). Pure tmux bindings; pass through when not focused
+        # in the sidebar. Sourced from a static conf to keep the quoting sane.
+        tmux source-file "$SCRIPTS_DIR/keys.conf"
     fi
 }
 
