@@ -15,6 +15,16 @@ A persistent left-side window-list sidebar for tmux. Inspired by [cmux](https://
 - When focused inside the sidebar, `C-j` / `C-k` step to the next / previous window
   and keep focus in the sidebar so you can keep browsing.
 
+## Screenshots
+
+**Expanded (default):**
+
+![Expanded sidebar — window list with session header and the active window's git/dir summary](assets/sidebar-expanded.png)
+
+**Collapsed (`prefix + Tab`):**
+
+![Collapsed sidebar — a narrow icon strip of window numbers](assets/sidebar-collapsed.png)
+
 ## Requirements
 
 - tmux 3.4+ (uses `set-hook`, per-pane user options, `split-window -f`)
