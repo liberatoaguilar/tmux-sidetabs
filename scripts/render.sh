@@ -156,30 +156,32 @@ emit_summary() {
         gitraw="$(get_session_option "$SESSION_ID" "$SUMMARY_CACHE_GIT" "")"
         dirsraw="$(get_session_option "$SESSION_ID" "$SUMMARY_CACHE_DIRS" "")"
     else
-        local apath br sub
-        # Active content pane cwd (for git).
-        apath="$(tmux list-panes -t "$wid" \
+        local paths p br sub
+        # Content-pane cwds, active pane first. Use the first that's a git repo
+        # for the branch line (the active pane may not be the repo one).
+        paths="$(tmux list-panes -t "$wid" \
             -F "#{pane_active}${TAB}#{@is_sidetab}${TAB}#{pane_current_path}" \
-            2>/dev/null | awk -F"$TAB" '$2 != "1"' | sort -r | head -1 \
-            | cut -d"$TAB" -f3)"
+            2>/dev/null | awk -F"$TAB" '$2 != "1"' | sort -r | cut -d"$TAB" -f3)"
 
         gitraw=""
-        if [ -n "$apath" ]; then
-            br="$(git -C "$apath" symbolic-ref --short -q HEAD 2>/dev/null \
-                  || git -C "$apath" rev-parse --short HEAD 2>/dev/null)"
+        while IFS= read -r p; do
+            [ -z "$p" ] && continue
+            br="$(git -C "$p" symbolic-ref --short -q HEAD 2>/dev/null \
+                  || git -C "$p" rev-parse --short HEAD 2>/dev/null)"
             if [ -n "$br" ]; then
-                sub="$(git -C "$apath" log -1 --format=%s 2>/dev/null)"
+                sub="$(git -C "$p" log -1 --format=%s 2>/dev/null)"
                 gitraw="$br $sub"
+                break
             fi
-        fi
+        done <<< "$paths"
 
-        # Working dirs of all content panes, home-shortened, joined by " | ".
+        # Working dirs of all content panes, home-shortened, de-duped, joined by " | ".
         dirsraw="$(tmux list-panes -t "$wid" \
             -F "#{@is_sidetab}${TAB}#{pane_current_path}" 2>/dev/null \
             | awk -F"$TAB" -v home="$HOME" '
                 $1 != "1" {
                     p=$2; if (index(p,home)==1) p="~" substr(p,length(home)+1)
-                    out = (out=="" ? p : out " | " p)
+                    if (!(p in seen)) { seen[p]=1; out=(out=="" ? p : out " | " p) }
                 } END { print out }')"
 
         set_session_option "$SESSION_ID" "$SUMMARY_CACHE_WIN" "$wid"
