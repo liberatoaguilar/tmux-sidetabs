@@ -6,8 +6,10 @@ A persistent left-side window-list sidebar for tmux. Inspired by [cmux](https://
 - Lists the windows in the current session as powerline pills (` N › name flags`),
   with a session-name header on top. The active window is highlighted, a window
   with a pending bell turns red, and activity shows in yellow (nord palette).
-- Under the active window, a small summary shows its main pane's command and
-  working directory (cmux-style). Toggle with `@sidetabs-summary`.
+- Under the active window, a cmux-style summary shows the git branch + latest
+  commit subject () and the working directory(ies) of its panes (), joined
+  by ` | ` when there are multiple panes. Toggle with `@sidetabs-summary`.
+  (Ports are intentionally omitted; bell notifications already show as a red tab.)
 - `prefix + Tab` toggles between expanded and a collapsed icon-strip.
 - `C-h` (your own vim-aware binding) moves left into the sidebar; `C-l` moves back out.
 - When focused inside the sidebar, `C-j` / `C-k` step to the next / previous window

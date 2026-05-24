@@ -41,6 +41,8 @@ ESC="$(printf '\033')"
 ARROW="$(printf '\xee\x82\xb0')"   # U+E0B0 powerline right cap (solid)
 THIN="$(printf '\xee\x82\xb1')"    # U+E0B1 powerline right separator (thin)
 RULE="$(printf '\xe2\x94\x80')"    # U+2500 box-drawing horizontal
+GIT_ICON="$(printf '\xee\x82\xa0')"  # U+E0A0 powerline branch
+DIR_ICON="$(printf '\xef\x81\xbb')"  # U+F07B folder
 TAB="$(printf '\t')"
 BOLD="${ESC}[1m"; NOBOLD="${ESC}[22m"; RESET="${ESC}[0m"
 hex_rgb() { local h="${1#\#}"; printf '%d;%d;%d' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}"; }
@@ -120,35 +122,74 @@ emit_row() {
         "$seg" "$BOLD" "$idx" "$NOBOLD" "$THIN" "$nm" "$spaces" "$cap" "$ARROW" "$RESET"
 }
 
-# One dim, truncated summary line.
-emit_summary_line() {
-    local text="$1" width="$2" maxt
-    maxt=$((width - 1)); [ "$maxt" -lt 0 ] && maxt=0
-    text=" ${text}"
-    text="${text:0:maxt}"
-    printf '%s%s%s\n' "$SUMMARY_SGR" "$text" "$RESET"
+# One dim summary line: " <icon> <text>", truncated to width with the icon kept.
+# mode=head keeps the start of the text (branch + commit start); mode=tail keeps
+# the end (so a single dir keeps its basename, e.g. …/tmux-sidetabs).
+emit_summary_icon() {
+    local icon="$1" text="$2" width="$3" mode="$4" avail maxtext keep
+    avail=$((width - 1)); [ "$avail" -lt 0 ] && avail=0
+    # Prefix " <icon> " is 3 display columns (space + 1-col glyph + space).
+    maxtext=$((avail - 3)); [ "$maxtext" -lt 0 ] && maxtext=0
+    if [ "${#text}" -gt "$maxtext" ]; then
+        keep=$((maxtext - 1)); [ "$keep" -lt 0 ] && keep=0
+        if [ "$mode" = "tail" ]; then
+            text="…${text:$(( ${#text} - keep ))}"
+        else
+            text="${text:0:keep}…"
+        fi
+    fi
+    printf '%s %s %s%s\n' "$SUMMARY_SGR" "$icon" "$text" "$RESET"
 }
 
-# Summary under the active window: working dir + foreground command of its main
-# (non-sidetab) pane — preferring the focused pane.
+# Summary under the active window: git (branch + last commit) and working dir(s)
+# of the window's content panes. Cached per-session for SUMMARY_TTL_MS so the
+# 1s redraw across all sidetabs doesn't re-spawn git.
 emit_summary() {
-    local wid="$1" width="$2" info cmd path
-    info="$(tmux list-panes -t "$wid" \
-        -F "#{pane_active}${TAB}#{@is_sidetab}${TAB}#{pane_current_command}${TAB}#{pane_current_path}" \
-        2>/dev/null | awk -F"$TAB" '$2 != "1"' | sort -r | head -1)"
-    [ -z "$info" ] && return
-    cmd="$(printf '%s' "$info" | cut -d"$TAB" -f3)"
-    path="$(printf '%s' "$info" | cut -d"$TAB" -f4)"
-    case "$path" in "$HOME"*) path="~${path#$HOME}";; esac
-    # Keep the tail of the path (basename is the useful part) when it's too long.
-    local maxpath=$((width - 2)); [ "$maxpath" -lt 0 ] && maxpath=0
-    if [ "${#path}" -gt "$maxpath" ]; then
-        local keep=$((maxpath - 1)); [ "$keep" -lt 0 ] && keep=0
-        local start=$(( ${#path} - keep ))
-        path="…${path:start}"
+    local wid="$1" width="$2"
+    local gitraw dirsraw now cw at
+
+    now="$(now_ms)"
+    cw="$(get_session_option "$SESSION_ID" "$SUMMARY_CACHE_WIN" "")"
+    at="$(get_session_option "$SESSION_ID" "$SUMMARY_CACHE_AT" "0")"
+
+    if [ "$cw" = "$wid" ] && [ "$((now - at))" -lt "$SUMMARY_TTL_MS" ]; then
+        gitraw="$(get_session_option "$SESSION_ID" "$SUMMARY_CACHE_GIT" "")"
+        dirsraw="$(get_session_option "$SESSION_ID" "$SUMMARY_CACHE_DIRS" "")"
+    else
+        local apath br sub
+        # Active content pane cwd (for git).
+        apath="$(tmux list-panes -t "$wid" \
+            -F "#{pane_active}${TAB}#{@is_sidetab}${TAB}#{pane_current_path}" \
+            2>/dev/null | awk -F"$TAB" '$2 != "1"' | sort -r | head -1 \
+            | cut -d"$TAB" -f3)"
+
+        gitraw=""
+        if [ -n "$apath" ]; then
+            br="$(git -C "$apath" symbolic-ref --short -q HEAD 2>/dev/null \
+                  || git -C "$apath" rev-parse --short HEAD 2>/dev/null)"
+            if [ -n "$br" ]; then
+                sub="$(git -C "$apath" log -1 --format=%s 2>/dev/null)"
+                gitraw="$br $sub"
+            fi
+        fi
+
+        # Working dirs of all content panes, home-shortened, joined by " | ".
+        dirsraw="$(tmux list-panes -t "$wid" \
+            -F "#{@is_sidetab}${TAB}#{pane_current_path}" 2>/dev/null \
+            | awk -F"$TAB" -v home="$HOME" '
+                $1 != "1" {
+                    p=$2; if (index(p,home)==1) p="~" substr(p,length(home)+1)
+                    out = (out=="" ? p : out " | " p)
+                } END { print out }')"
+
+        set_session_option "$SESSION_ID" "$SUMMARY_CACHE_WIN" "$wid"
+        set_session_option "$SESSION_ID" "$SUMMARY_CACHE_AT" "$now"
+        set_session_option "$SESSION_ID" "$SUMMARY_CACHE_GIT" "$gitraw"
+        set_session_option "$SESSION_ID" "$SUMMARY_CACHE_DIRS" "$dirsraw"
     fi
-    [ -n "$cmd" ] && emit_summary_line "$cmd" "$width"
-    [ -n "$path" ] && emit_summary_line "$path" "$width"
+
+    [ -n "$gitraw" ]  && emit_summary_icon "$GIT_ICON" "$gitraw" "$width" head
+    [ -n "$dirsraw" ] && emit_summary_icon "$DIR_ICON" "$dirsraw" "$width" tail
 }
 
 emit_lines() {
