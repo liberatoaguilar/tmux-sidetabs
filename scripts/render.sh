@@ -18,6 +18,7 @@
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$CURRENT_DIR/variables.sh"
 source "$CURRENT_DIR/helpers.sh"
+source "$CURRENT_DIR/icons.sh"
 
 MY_PANE_ID="$TMUX_PANE"
 
@@ -69,24 +70,6 @@ RULE="$(printf '\xe2\x94\x80')"    # U+2500 box-drawing horizontal
 GIT_ICON="$(printf '\xee\x82\xa0')"  # U+E0A0 powerline branch
 DIR_ICON="$(printf '\xef\x81\xbb')"  # U+F07B folder
 TAB="$(printf '\t')"
-
-# Per-command icons (Nerd Font). Bytes are printf'd like the glyphs above so they
-# work under bash 3.2 (no $'\u'). Exact glyphs are tweakable; see get_icon below.
-ICON_EDITOR="$(printf '\xee\x98\xab')"  # U+E62B  vim/editor
-ICON_NODE="$(printf '\xee\x9c\x98')"    # U+E718  node/js
-ICON_PYTHON="$(printf '\xee\x98\x86')"  # U+E606  python
-ICON_RUBY="$(printf '\xee\x9c\xb9')"    # U+E739  ruby
-ICON_GO="$(printf '\xee\x98\xa7')"      # U+E627  go
-ICON_RUST="$(printf '\xee\x9e\xa8')"    # U+E7A8  rust
-ICON_GIT="$(printf '\xee\x9c\x82')"     # U+E702  git
-ICON_DOCKER="$(printf '\xee\x9e\xb0')"  # U+E7B0  docker/containers
-ICON_DB="$(printf '\xee\x9c\x86')"      # U+E706  database
-ICON_REMOTE="$(printf '\xef\x83\x82')"  # U+F0C2  ssh/cloud
-ICON_PAGER="$(printf '\xef\x80\xad')"   # U+F02D  pager/book
-ICON_LOGS="$(printf '\xef\x83\xb6')"    # U+F0F6  logs/file-text
-ICON_BUILD="$(printf '\xef\x82\xad')"   # U+F0AD  make/wrench
-ICON_SHELL="$(printf '\xef\x84\xa0')"   # U+F120  shell/terminal
-ICON_DEFAULT="$(printf '\xef\x84\x91')" # U+F111  default (filled circle)
 BOLD="${ESC}[1m"; NOBOLD="${ESC}[22m"; RESET="${ESC}[0m"
 hex_rgb() { local h="${1#\#}"; printf '%d;%d;%d' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}"; }
 
@@ -254,23 +237,7 @@ get_icon() {
     for e in $CMD_MAP; do
         case "$e" in "$1:"*) cmd="${e#*:}"; break ;; esac
     done
-    case "$cmd" in
-        vim|nvim|vi|view)                 ICON="$ICON_EDITOR" ;;
-        node|nodejs|npm|npx|yarn|pnpm|bun|deno) ICON="$ICON_NODE" ;;
-        python|python3|ipython|pip|pip3)  ICON="$ICON_PYTHON" ;;
-        ruby|rails|irb|bundle)            ICON="$ICON_RUBY" ;;
-        go|gopls)                         ICON="$ICON_GO" ;;
-        cargo|rustc|rust-analyzer)        ICON="$ICON_RUST" ;;
-        git|lazygit|gitui|tig)            ICON="$ICON_GIT" ;;
-        docker|docker-compose|kubectl|k9s) ICON="$ICON_DOCKER" ;;
-        psql|mysql|redis-cli|sqlite3|mongosh) ICON="$ICON_DB" ;;
-        ssh|mosh|sshpass)                 ICON="$ICON_REMOTE" ;;
-        less|more|man|bat)                ICON="$ICON_PAGER" ;;
-        tail|journalctl|tailspin)         ICON="$ICON_LOGS" ;;
-        make|cmake|gcc|cc|clang|gradle)   ICON="$ICON_BUILD" ;;
-        bash|zsh|fish|sh|dash)            ICON="$ICON_SHELL" ;;
-        *)                                ICON="$ICON_DEFAULT" ;;
-    esac
+    icon_for "$cmd"
 }
 
 # Serialize ROW_WIN (line-index -> window_id) to a per-pane option so the
