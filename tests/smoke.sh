@@ -60,4 +60,31 @@ for e in $rowmap; do
 done
 pass "rowmap well-formed — $rowmap"
 
+# 9. click.sh selects the target window and focuses its content pane.
+active_win="$(tmux -L "$SOCKET" display-message -p -t main '#{window_id}')"
+target_y=""; target_win=""
+for e in $rowmap; do
+  ey="${e%%:*}"; ew="${e#*:}"
+  if [ "$ew" != "$active_win" ]; then target_y="$ey"; target_win="$ew"; break; fi
+done
+[ -n "$target_win" ] || fail "no non-active window found in rowmap"
+origin_sidetab="$(tmux -L "$SOCKET" list-panes -t "$active_win" \
+                   -F '#{pane_id} #{@is_sidetab}' | awk '$2==1{print $1}')"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/click.sh $target_y $origin_sidetab"
+sleep 0.3
+sel="$(tmux -L "$SOCKET" display-message -p -t main '#{window_id} #{@is_sidetab}')"
+sel_win="${sel%% *}"; sel_mark="${sel##* }"
+[ "$sel_win" = "$target_win" ] || fail "click selected $sel_win, expected $target_win"
+[ "$sel_mark" != "1" ] || fail "click left focus on sidetab, not content"
+pass "click selected window $target_win and focused content"
+
+# 10. A no-row click (y=0 = header) just focuses the sidebar pane.
+new_sidetab="$(tmux -L "$SOCKET" list-panes -t "$target_win" \
+                -F '#{pane_id} #{@is_sidetab}' | awk '$2==1{print $1}')"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/click.sh 0 $new_sidetab"
+sleep 0.3
+sel2="$(tmux -L "$SOCKET" display-message -p -t main '#{pane_id}')"
+[ "$sel2" = "$new_sidetab" ] || fail "no-row click didn't focus sidebar (got $sel2)"
+pass "no-row click focused the sidebar pane"
+
 echo "ALL SMOKE TESTS PASSED"

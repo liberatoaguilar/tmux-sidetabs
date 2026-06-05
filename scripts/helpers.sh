@@ -49,6 +49,17 @@ pane_is_sidetab() {
     [ "$(get_pane_option "$pane_id" "@is_sidetab" "0")" = "1" ]
 }
 
+# Returns the pane_id of a window's content (non-sidetab) pane, preferring the
+# active one. TAB-separated so the often-empty @is_sidetab field can't collapse
+# under whitespace splitting (same fix used in render.sh's emit_summary).
+find_content_pane() {
+    local window_id="$1" TAB
+    TAB="$(printf '\t')"
+    tmux list-panes -t "$window_id" \
+        -F "#{pane_active}${TAB}#{@is_sidetab}${TAB}#{pane_id}" 2>/dev/null \
+        | awk -F"$TAB" '$2 != "1"' | sort -r | head -1 | cut -d"$TAB" -f3
+}
+
 # Current epoch ms. Runs on every refresh hook, so startup cost matters: prefer
 # perl (~0-2ms, ms precision) over python3 (~30ms cold-start, ~15x slower) to avoid
 # a process-spawn storm. date fallback is seconds-only — too coarse for the 100ms
