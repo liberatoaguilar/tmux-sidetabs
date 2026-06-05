@@ -8,6 +8,7 @@ RENDER_PID_OPTION="@sidetabs_render_pid"
 COLLAPSED_OPTION="@sidetabs_collapsed"
 WIDTH_OPTION="@sidetabs_width"                   # current expanded width (synced)
 LAST_REFRESH_OPTION="@sidetabs_last_refresh_ms"  # debounce stamp
+ROWMAP_OPTION="@sidetabs_rowmap"                 # "y:window_id ..." map for click-to-select
 
 # Active-tab summary cache (per-session) — avoids re-spawning git every second
 # across every window's sidetab. Recompute-on-miss is idempotent, so no lock.
@@ -22,6 +23,7 @@ DEFAULT_EXPANDED_WIDTH="20"
 DEFAULT_COLLAPSED_WIDTH="4"
 DEFAULT_TOGGLE_KEY="Tab"
 DEFAULT_SKIP_NAV="on"
+DEFAULT_MOUSE="off"
 REFRESH_DEBOUNCE_MS="100"
 
 # Width-sync feedback guard. Propagating a resize to the other windows fires
