@@ -8,7 +8,6 @@ RENDER_PID_OPTION="@sidetabs_render_pid"
 COLLAPSED_OPTION="@sidetabs_collapsed"
 WIDTH_OPTION="@sidetabs_width"                   # current expanded width (synced)
 LAST_REFRESH_OPTION="@sidetabs_last_refresh_ms"  # debounce stamp
-ROWMAP_OPTION="@sidetabs_rowmap"                 # "y:window_id ..." map for click-to-select
 
 # Active-tab summary cache (per-session) — avoids re-spawning git every second
 # across every window's sidetab. Recompute-on-miss is idempotent, so no lock.

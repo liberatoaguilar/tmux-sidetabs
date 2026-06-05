@@ -51,53 +51,41 @@ w3="$(tmux -L "$SOCKET" display-message -p -t "$sidetab" '#{pane_width}')"
 [ "$w3" -ge 18 ] && [ "$w3" -le 22 ] || fail "re-expanded width unexpected: $w3"
 pass "re-expanded width = $w3"
 
-# 8. Rowmap is emitted and well-formed (expanded mode, 2 windows).
-sleep 0.4
-rowmap="$(tmux -L "$SOCKET" show-option -t main -qv @sidetabs_rowmap)"
-[ -n "$rowmap" ] || fail "rowmap empty"
-for e in $rowmap; do
-  echo "$e" | grep -Eq '^[0-9]+:@[0-9]+$' || fail "rowmap entry malformed: $e"
+# 8. Self-mouse click-to-select: render.sh reads its OWN mouse (no global tmux
+#    `mouse`). We inject synthetic SGR clicks into a sidebar pane's stdin (via
+#    send-keys -H, which needs no real mouse and no focus) and assert it switches
+#    windows. @sidetabs-summary off makes the layout deterministic:
+#      line 0 header, line 1 rule, line 2 = window[0] row (SGR y=3),
+#      line 3 rule, line 4 = window[1] row (SGR y=5).
+tmux -L "$SOCKET" set-option -g @sidetabs-mouse on
+tmux -L "$SOCKET" set-option -g @sidetabs-summary off
+# Restart every sidebar render loop so it picks up the options + enables self-mouse.
+for p in $(tmux -L "$SOCKET" list-panes -a -F '#{pane_id} #{@is_sidetab}' | awk '$2==1{print $1}'); do
+  tmux -L "$SOCKET" respawn-pane -k -t "$p" "$PLUGIN_DIR/scripts/render.sh"
 done
-pass "rowmap well-formed — $rowmap"
+sleep 1
 
-# 9. click.sh selects the target window and focuses its content pane.
-active_win="$(tmux -L "$SOCKET" display-message -p -t main '#{window_id}')"
-target_y=""; target_win=""
-for e in $rowmap; do
-  ey="${e%%:*}"; ew="${e#*:}"
-  if [ "$ew" != "$active_win" ]; then target_y="$ey"; target_win="$ew"; break; fi
-done
-[ -n "$target_win" ] || fail "no non-active window found in rowmap"
-origin_sidetab="$(tmux -L "$SOCKET" list-panes -t "$active_win" \
-                   -F '#{pane_id} #{@is_sidetab}' | awk '$2==1{print $1}')"
-tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/click.sh $target_y $origin_sidetab"
-sleep 0.3
+w0="$(tmux -L "$SOCKET" list-windows -t main -F '#{window_id}' | sed -n 1p)"
+w1="$(tmux -L "$SOCKET" list-windows -t main -F '#{window_id}' | sed -n 2p)"
+[ -n "$w0" ] && [ -n "$w1" ] || fail "expected 2 windows for the click test"
+
+# Make w1 active, then click window[0]'s row (SGR y=3) in w1's sidebar.
+tmux -L "$SOCKET" select-window -t "$w1"
+sb1="$(tmux -L "$SOCKET" list-panes -t "$w1" -F '#{pane_id} #{@is_sidetab}' | awk '$2==1{print $1}')"
+tmux -L "$SOCKET" send-keys -t "$sb1" -H 1b 5b 3c 30 3b 33 3b 33 4d   # ESC [ < 0 ; 3 ; 3 M
+sleep 1
 sel="$(tmux -L "$SOCKET" display-message -p -t main '#{window_id} #{@is_sidetab}')"
 sel_win="${sel%% *}"; sel_mark="${sel##* }"
-[ "$sel_win" = "$target_win" ] || fail "click selected $sel_win, expected $target_win"
-[ "$sel_mark" != "1" ] || fail "click left focus on sidetab, not content"
-pass "click selected window $target_win and focused content"
+[ "$sel_win" = "$w0" ] || fail "self-mouse click selected $sel_win, expected $w0"
+[ "$sel_mark" != "1" ] || fail "self-mouse click left focus on sidetab, not content"
+pass "self-mouse click switched to window $w0 and focused content"
 
-# 10. A no-row click (y=0 = header) just focuses the sidebar pane.
-new_sidetab="$(tmux -L "$SOCKET" list-panes -t "$target_win" \
-                -F '#{pane_id} #{@is_sidetab}' | awk '$2==1{print $1}')"
-tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/click.sh 0 $new_sidetab"
-sleep 0.3
-sel2="$(tmux -L "$SOCKET" display-message -p -t main '#{pane_id}')"
-[ "$sel2" = "$new_sidetab" ] || fail "no-row click didn't focus sidebar (got $sel2)"
-pass "no-row click focused the sidebar pane"
-
-# 11. Default (mouse off): MouseDown1Pane is NOT our handler.
-binding_off="$(tmux -L "$SOCKET" list-keys -T root 2>/dev/null | grep MouseDown1Pane || true)"
-echo "$binding_off" | grep -q 'click.sh' && fail "click.sh bound while @sidetabs-mouse off"
-pass "no click binding when mouse off"
-
-# 12. With @sidetabs-mouse on, re-sourcing installs the click binding.
-tmux -L "$SOCKET" set-option -g @sidetabs-mouse on
-tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/sidetabs.tmux"
-sleep 0.2
-binding_on="$(tmux -L "$SOCKET" list-keys -T root 2>/dev/null | grep MouseDown1Pane || true)"
-echo "$binding_on" | grep -q 'click.sh' || fail "MouseDown1Pane not bound to click.sh when mouse on"
-pass "MouseDown1Pane bound when @sidetabs-mouse on"
+# 9. A click on a non-row line (header, SGR y=1) does NOT change the window.
+sb0="$(tmux -L "$SOCKET" list-panes -t "$w0" -F '#{pane_id} #{@is_sidetab}' | awk '$2==1{print $1}')"
+tmux -L "$SOCKET" send-keys -t "$sb0" -H 1b 5b 3c 30 3b 33 3b 31 4d   # ESC [ < 0 ; 3 ; 1 M (header)
+sleep 1
+now_win="$(tmux -L "$SOCKET" display-message -p -t main '#{window_id}')"
+[ "$now_win" = "$w0" ] || fail "header click changed window ($now_win), expected no change"
+pass "self-mouse header click is a no-op"
 
 echo "ALL SMOKE TESTS PASSED"

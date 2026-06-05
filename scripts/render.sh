@@ -27,14 +27,33 @@ MY_PANE_ID="$TMUX_PANE"
 SESSION_ID="$(tmux display-message -p -t "$MY_PANE_ID" '#{session_id}' 2>/dev/null)"
 [ -z "$SESSION_ID" ] && SESSION_ID="$1"
 
-# No-op handler: its only job is to interrupt `wait` so the loop redraws now.
+# No-op handler: its only job is to interrupt `read`/`wait` so the loop redraws now.
 trap ':' USR1
 
 set_pane_option "$MY_PANE_ID" "$RENDER_PID_OPTION" "$$"
 
-# Hide cursor + restore on exit.
+# Click-to-select (self-mouse): when @sidetabs-mouse is on, THIS pane enables its
+# own mouse reporting and reads its own clicks — no global tmux `mouse` needed.
+# tmux forwards mouse events to the focused pane's app that requested them, so
+# clicks only register while this sidebar pane is focused (the workflow: C-h into
+# the sidebar, then click a row). Clicks-only modes (1000 + SGR 1006); no
+# 1002/1003 motion tracking, so no motion spam.
+MOUSE_ON="$(get_tmux_option '@sidetabs-mouse' "$DEFAULT_MOUSE")"
+SAVED_STTY=""
+if [ "$MOUSE_ON" = "on" ]; then
+    SAVED_STTY="$(stty -g 2>/dev/null || true)"
+    stty -echo -icanon min 1 time 0 2>/dev/null || true
+    printf '\033[?1000h\033[?1006h'
+fi
+
+# Hide cursor; restore cursor + mouse + tty on exit.
 printf '\033[?25l'
-trap 'printf "\033[?25h"; exit 0' EXIT INT TERM
+cleanup() {
+    printf '\033[?25h'
+    [ "$MOUSE_ON" = "on" ] && printf '\033[?1000l\033[?1006l'
+    [ -n "$SAVED_STTY" ] && stty "$SAVED_STTY" 2>/dev/null
+}
+trap 'cleanup; exit 0' EXIT INT TERM
 
 # --- Theme -----------------------------------------------------------------
 ESC="$(printf '\033')"
@@ -194,8 +213,15 @@ emit_summary() {
     [ -n "$dirsraw" ] && emit_summary_icon "$DIR_ICON" "$dirsraw" "$width" tail
 }
 
-emit_lines() {
-    local collapsed width fmt rule i sname y map summ n
+# Build the visual lines (LINES[]) and a line-index -> window_id map (ROW_WIN[])
+# for click-to-select. Uses process substitution (done < <(...)) so the arrays
+# accumulate in THIS shell — a piped `while` would lose them to a subshell. A
+# row's line index is "${#LINES[@]} - 1" right after it's appended, which keeps the
+# map correct across the header, the per-window rules, and the active window's 0-2
+# summary lines (appended as plain lines, with no ROW_WIN entry).
+build_lines() {
+    LINES=(); ROW_WIN=()
+    local collapsed width rule i sname fmt flags summ sline
     collapsed="$(get_session_option "$SESSION_ID" "$COLLAPSED_OPTION" "0")"
     width="$(tmux display-message -p -t "$MY_PANE_ID" '#{pane_width}' 2>/dev/null)"
     [ -z "$width" ] && width=4
@@ -204,65 +230,85 @@ emit_lines() {
     while [ "$i" -lt "$width" ]; do rule="${rule}${RULE}"; i=$((i + 1)); done
     rule="${RULE_SGR}${rule}${RESET}"
 
-    # As we draw, build "$map" — a "y:window_id ..." mapping of clickable rows for
-    # click-to-select (see click.sh). The window loops use process substitution
-    # (done < <(...)) rather than a pipe so the y counter and map survive the loop;
-    # a piped `while` would run in a subshell and lose them. set_session_option is
-    # a tmux side effect, so it persists even though emit_lines runs as the left
-    # side of draw()'s pipe.
-
     if [ "$collapsed" = "1" ]; then
-        printf '\n'                       # line 0: leading blank
-        y=1; map=""
+        LINES+=("")                       # line 0: leading blank
         fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_index}${TAB}#{window_id}"
         while IFS="$TAB" read -r active bell activity idx wid; do
-            emit_row "$active" "$bell" "$activity" "$idx" "" "" "$width" 1
-            map="${map}${map:+ }${y}:${wid}"
-            y=$((y + 1))
+            LINES+=("$(emit_row "$active" "$bell" "$activity" "$idx" "" "" "$width" 1)")
+            ROW_WIN[$(( ${#LINES[@]} - 1 ))]="$wid"
         done < <(tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null)
-        set_session_option "$SESSION_ID" "$ROWMAP_OPTION" "$map"
         return
     fi
 
     sname="$(tmux display-message -p -t "$SESSION_ID" '#{session_name}' 2>/dev/null)"
-    emit_header "$sname" "$width"         # line 0: header
+    LINES+=("$(emit_header "$sname" "$width")")   # line 0: header
 
     # All fields are non-empty booleans/numbers/ids (no #{window_flags}, which can
     # be empty and would collapse under tab-splitting). Flags are rebuilt below.
-    y=1; map=""
     fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_last_flag}${TAB}#{window_zoomed_flag}${TAB}#{window_index}${TAB}#{window_id}${TAB}#{window_name}"
     while IFS="$TAB" read -r active bell activity last zoomed idx wid name; do
         flags=""
         [ "$active" = "1" ] && flags="*"
         [ "$last" = "1" ] && flags="${flags}-"
         [ "$zoomed" = "1" ] && flags="${flags}Z"
-        printf '%s\n' "$rule"             # rule line
-        y=$((y + 1))
-        emit_row "$active" "$bell" "$activity" "$idx" "$flags" "$name" "$width" 0
-        map="${map}${map:+ }${y}:${wid}"  # y now points at the row just emitted
-        y=$((y + 1))
+        LINES+=("$rule")                              # rule line
+        LINES+=("$(emit_row "$active" "$bell" "$activity" "$idx" "$flags" "$name" "$width" 0)")
+        ROW_WIN[$(( ${#LINES[@]} - 1 ))]="$wid"       # index of the row just added
         if [ "$active" = "1" ] && [ "$summary_on" = "on" ]; then
             summ="$(emit_summary "$wid" "$width")"
             if [ -n "$summ" ]; then
-                printf '%s\n' "$summ"
-                n="$(printf '%s\n' "$summ" | grep -c '')"
-                y=$((y + n))
+                while IFS= read -r sline; do LINES+=("$sline"); done <<< "$summ"
             fi
         fi
     done < <(tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null)
-    set_session_option "$SESSION_ID" "$ROWMAP_OPTION" "$map"
 }
 
-draw() {
+draw_lines() {
     printf '\033[H'
-    emit_lines | while IFS= read -r line; do
+    local line
+    for line in "${LINES[@]}"; do
         printf '%s\033[K\n' "$line"
     done
     printf '\033[J'
 }
 
+# Map a click at SGR row Y (1-based) to a window and switch to it. SGR mouse
+# coordinates are pane-relative, so line index = Y - 1. Clicks on non-row lines
+# (header/rule/summary) map to no window and are a no-op (you're already here).
+on_click() {
+    local idx=$(( $1 - 1 )) wid cp
+    wid="${ROW_WIN[$idx]:-}"
+    [ -z "$wid" ] && return
+    tmux select-window -t "$wid" 2>/dev/null || return
+    cp="$(find_content_pane "$wid" || true)"
+    [ -n "$cp" ] && tmux select-pane -t "$cp" 2>/dev/null || true
+}
+
+# Wait up to ~1s for input. On a left-button SGR press (ESC [ < 0 ; x ; y M),
+# switch windows. On timeout or USR1 (the immediate-redraw signal) just return so
+# the loop redraws — preserving the 1s cadence.
+read_mouse() {
+    local c d seq b y
+    IFS= read -rsn1 -t 1 c || return
+    [ "$c" = "$ESC" ] || return
+    seq=""
+    while IFS= read -rsn1 -t 1 d; do
+        seq+="$d"
+        case "$d" in [a-zA-Z]) break ;; esac
+    done
+    if [[ "$seq" =~ ^\[\<([0-9]+)\;([0-9]+)\;([0-9]+)M$ ]]; then
+        b="${BASH_REMATCH[1]}"; y="${BASH_REMATCH[3]}"
+        [ "$b" = "0" ] && on_click "$y"
+    fi
+}
+
 while true; do
-    draw
-    sleep 1 &
-    wait $! 2>/dev/null
+    build_lines
+    draw_lines
+    if [ "$MOUSE_ON" = "on" ]; then
+        read_mouse
+    else
+        sleep 1 &
+        wait $! 2>/dev/null
+    fi
 done

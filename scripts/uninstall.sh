@@ -33,7 +33,4 @@ for k in 'C-j' 'C-k' 'C-n' 'C-r' 'C-x' 'M-j' 'M-k'; do
     tmux unbind-key -n "$k" 2>/dev/null || true
 done
 
-# Remove the mouse click override (reverts to tmux's default MouseDown1Pane).
-tmux unbind-key -n MouseDown1Pane 2>/dev/null || true
-
 tmux display-message "tmux-sidetabs uninstalled. Reload ~/.tmux.conf to restore C-j/C-k."
