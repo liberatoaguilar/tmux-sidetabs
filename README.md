@@ -58,7 +58,7 @@ run-shell '/path/to/tmux-sidetabs/sidetabs.tmux'
 | `C-r` (in sidebar) | Rename the current window (prefilled) |
 | `C-x` (in sidebar) | Kill the current window (with `y/n` confirm) |
 | `M-k` / `M-j` (in sidebar) | Move the current window up / down (reorder) |
-| Left-click a window row (while in the sidebar) | Switch to that window and focus its content pane (needs `@sidetabs-mouse on`; no global tmux mouse) |
+| Left-click a window row (while in the sidebar) | Switch to that window; focus stays in the sidebar so you can keep clicking (needs `@sidetabs-mouse on`; no global tmux mouse) |
 
 `C-j` / `C-k` outside the sidebar keep their normal `select-pane -D/-U` behavior
 (and forward to vim when a vim-like process has focus). The window-management

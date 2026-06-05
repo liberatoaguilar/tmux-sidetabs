@@ -23,7 +23,8 @@ tmux delivers mouse events only to the **focused** pane. A sidebar is usually no
 focused (you click it from a content pane). Therefore self-mouse clicks only work
 **while the sidebar pane is focused**. The intended workflow:
 
-> `C-h` into the sidebar → click any row → land in that window's content pane.
+> `C-h` into the sidebar → click any row → jump to that window; focus stays in the
+> sidebar so you can keep clicking to browse.
 
 "Click the sidebar from any pane" is impossible without global mouse and is out of
 scope. This was accepted explicitly.
@@ -74,9 +75,9 @@ done
   buttons are ignored. Timeout or `USR1` (the existing immediate-redraw signal)
   just returns → redraw. Cadence is unchanged (≤1s).
 - `on_click <y>`: `idx = y - 1`; `wid = ROW_WIN[idx]`; if set →
-  `tmux select-window -t "$wid"` then `tmux select-pane -t "$(find_content_pane "$wid")"`.
-  A click on a non-row line (header/rule/summary) is a no-op (you're already in the
-  sidebar).
+  `tmux select-window -t "$wid"` then `tmux select-pane -t "$(find_sidetab_pane "$wid")"`
+  — i.e. keep focus in the **new window's sidebar** (like `sidetab_nav.sh`) so you can
+  keep clicking to browse. A click on a non-row line (header/rule/summary) is a no-op.
 
 ### Deletions (v1 plumbing no longer used)
 - `scripts/click.sh` — removed.
@@ -85,7 +86,8 @@ done
 - `scripts/variables.sh` — remove `ROWMAP_OPTION` (the session rowmap is gone).
 
 ### Kept
-- `scripts/helpers.sh` `find_content_pane` — now called by `render.sh`.
+- `scripts/helpers.sh` `find_sidetab_pane` — used by `on_click` to keep focus in the
+  target window's sidebar.
 - `@sidetabs-mouse` option + `DEFAULT_MOUSE="off"` — now gates the self-mouse loop.
 
 ## Coordinates

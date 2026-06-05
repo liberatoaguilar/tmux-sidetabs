@@ -77,8 +77,8 @@ sleep 1
 sel="$(tmux -L "$SOCKET" display-message -p -t main '#{window_id} #{@is_sidetab}')"
 sel_win="${sel%% *}"; sel_mark="${sel##* }"
 [ "$sel_win" = "$w0" ] || fail "self-mouse click selected $sel_win, expected $w0"
-[ "$sel_mark" != "1" ] || fail "self-mouse click left focus on sidetab, not content"
-pass "self-mouse click switched to window $w0 and focused content"
+[ "$sel_mark" = "1" ] || fail "self-mouse click should keep focus in the sidebar (got non-sidetab)"
+pass "self-mouse click switched to window $w0 and kept focus in the sidebar"
 
 # 9. A click on a non-row line (header, SGR y=1) does NOT change the window.
 sb0="$(tmux -L "$SOCKET" list-panes -t "$w0" -F '#{pane_id} #{@is_sidetab}' | awk '$2==1{print $1}')"

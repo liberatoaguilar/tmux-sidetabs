@@ -275,13 +275,15 @@ draw_lines() {
 # Map a click at SGR row Y (1-based) to a window and switch to it. SGR mouse
 # coordinates are pane-relative, so line index = Y - 1. Clicks on non-row lines
 # (header/rule/summary) map to no window and are a no-op (you're already here).
+# Focus stays in the new window's sidebar (like sidetab_nav.sh) so you can keep
+# clicking to browse — clicks only register while a sidebar is focused.
 on_click() {
-    local idx=$(( $1 - 1 )) wid cp
+    local idx=$(( $1 - 1 )) wid sp
     wid="${ROW_WIN[$idx]:-}"
     [ -z "$wid" ] && return
     tmux select-window -t "$wid" 2>/dev/null || return
-    cp="$(find_content_pane "$wid" || true)"
-    [ -n "$cp" ] && tmux select-pane -t "$cp" 2>/dev/null || true
+    sp="$(find_sidetab_pane "$wid")"
+    [ -n "$sp" ] && tmux select-pane -t "$sp" 2>/dev/null || true
 }
 
 # Wait up to ~1s for input. On a left-button SGR press (ESC [ < 0 ; x ; y M),
