@@ -7,8 +7,8 @@ A persistent left-side window-list sidebar for tmux. Inspired by [cmux](https://
   with a session-name header on top. The active window is highlighted, a window
   with a pending bell turns red, and activity shows in yellow (nord palette).
 - Each row shows a Nerd Font icon for the command running in that window's content
-  pane (editor, server, shell, db, …); the collapsed strip shows the number + icon.
-  Toggle with `@sidetabs-icons`.
+  pane (editor, server, shell, db, AI coding agents, …); the collapsed strip shows
+  the number + icon. Toggle with `@sidetabs-icons`.
 - `prefix + /` opens a fuzzy-search popup over the current session's windows
   (search by name, running command, or directory) and jumps to the one you pick.
   Uses fzf when available, otherwise tmux's built-in `choose-tree`.

@@ -16,11 +16,14 @@ ICON_PAGER="$(printf '\xef\x80\xad')"   # U+F02D  pager/book
 ICON_LOGS="$(printf '\xef\x83\xb6')"    # U+F0F6  logs/file-text
 ICON_BUILD="$(printf '\xef\x82\xad')"   # U+F0AD  make/wrench
 ICON_SHELL="$(printf '\xef\x84\xa0')"   # U+F120  shell/terminal
+ICON_AI="$(printf '\xef\x8b\x9b')"      # U+F2DB  microchip — AI coding agents
 ICON_DEFAULT="$(printf '\xef\x84\x91')" # U+F111  default (filled circle)
 
 # icon_for <command> — set global ICON to the mapped glyph (or the default).
 icon_for() {
     case "$1" in
+        codex|opencode|claude|claude-code) ICON="$ICON_AI" ;;
+        [0-9]*.[0-9]*.[0-9]*)             ICON="$ICON_AI" ;;  # Claude Code reports its version
         vim|nvim|vi|view)                 ICON="$ICON_EDITOR" ;;
         node|nodejs|npm|npx|yarn|pnpm|bun|deno) ICON="$ICON_NODE" ;;
         python|python3|ipython|pip|pip3)  ICON="$ICON_PYTHON" ;;

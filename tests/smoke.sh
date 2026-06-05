@@ -152,4 +152,17 @@ else
   pass "search key bound to choose-tree fallback"
 fi
 
+# 15. icon_for maps AI coding agents (codex / opencode / Claude's version string)
+#     to the chip icon, and still maps known tools + unknowns correctly.
+(
+  source "$PLUGIN_DIR/scripts/icons.sh"
+  icon_for codex;       [ "$ICON" = "$ICON_AI" ]      || exit 1
+  icon_for opencode;    [ "$ICON" = "$ICON_AI" ]      || exit 1
+  icon_for claude;      [ "$ICON" = "$ICON_AI" ]      || exit 1
+  icon_for 2.1.160;     [ "$ICON" = "$ICON_AI" ]      || exit 1
+  icon_for vim;         [ "$ICON" = "$ICON_EDITOR" ]  || exit 1
+  icon_for somethingxyz;[ "$ICON" = "$ICON_DEFAULT" ] || exit 1
+) || fail "icon_for AI-agent / fallback mapping is wrong"
+pass "icon_for maps codex/opencode/claude to the chip icon"
+
 echo "ALL SMOKE TESTS PASSED"
