@@ -6,6 +6,9 @@ A persistent left-side window-list sidebar for tmux. Inspired by [cmux](https://
 - Lists the windows in the current session as powerline pills (` N › name flags`),
   with a session-name header on top. The active window is highlighted, a window
   with a pending bell turns red, and activity shows in yellow (nord palette).
+- Each row shows a Nerd Font icon for the command running in that window's content
+  pane (editor, server, shell, db, …); the collapsed strip shows the number + icon.
+  Toggle with `@sidetabs-icons`.
 - Under the active window, a cmux-style summary shows the git branch + latest
   commit subject () and the working directory(ies) of its panes (), joined
   by ` | ` when there are multiple panes. Toggle with `@sidetabs-summary`.
@@ -72,9 +75,10 @@ reverse-search, `C-n` completion, etc. are untouched.
 | --- | --- | --- |
 | `@sidetabs-toggle-key` | `Tab` | Prefix key to toggle collapse |
 | `@sidetabs-expanded-width` | `20` | Cols in expanded mode |
-| `@sidetabs-collapsed-width` | `4` | Cols in collapsed mode |
+| `@sidetabs-collapsed-width` | `5` | Cols in collapsed mode (fits number + icon) |
 | `@sidetabs-skip-nav` | `on` | `off` to leave `C-j` / `C-k` untouched |
 | `@sidetabs-mouse` | `off` | `on` to click a row to switch windows while the sidebar is focused (no global tmux `mouse` needed) |
+| `@sidetabs-icons` | `on` | `off` to hide the per-window command icon |
 | `@sidetabs-uninstall-key` | (unset) | Prefix key to uninstall in-session |
 | `@sidetabs-summary` | `on` | `off` to hide the summary under the active window |
 | `@sidetabs-active-bg` | `#88c0d0` | Active-row background (nord8) |
