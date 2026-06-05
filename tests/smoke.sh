@@ -143,4 +143,13 @@ psel="$(tmux -L "$SOCKET" display-message -p -t main '#{window_id} #{@is_sidetab
 [ "${psel##* }" = "1" ] || fail "search pick didn't focus the sidebar"
 pass "search pick switched to $w0 and focused its sidebar"
 
+# 14. The search key is bound after load (fzf -> popup+search.sh, else choose-tree).
+if command -v fzf >/dev/null 2>&1; then
+  tmux -L "$SOCKET" list-keys 2>/dev/null | grep -q 'search.sh' || fail "search popup not bound (fzf path)"
+  pass "search key bound to display-popup + search.sh"
+else
+  tmux -L "$SOCKET" list-keys 2>/dev/null | grep -q 'choose-tree' || fail "search fallback (choose-tree) not bound"
+  pass "search key bound to choose-tree fallback"
+fi
+
 echo "ALL SMOKE TESTS PASSED"

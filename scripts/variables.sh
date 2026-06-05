@@ -27,6 +27,7 @@ DEFAULT_TOGGLE_KEY="Tab"
 DEFAULT_SKIP_NAV="on"
 DEFAULT_MOUSE="off"
 DEFAULT_ICONS="on"
+DEFAULT_SEARCH_KEY="/"
 REFRESH_DEBOUNCE_MS="100"
 
 # Width-sync feedback guard. Propagating a resize to the other windows fires

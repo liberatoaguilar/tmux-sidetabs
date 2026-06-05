@@ -43,6 +43,18 @@ bind_keys() {
         tmux bind-key "$uninstall_key" run-shell "$SCRIPTS_DIR/uninstall.sh"
     fi
 
+    local search_key
+    search_key="$(get_tmux_option "@sidetabs-search-key" "$DEFAULT_SEARCH_KEY")"
+    if [ -n "$search_key" ]; then
+        # fzf if available -> fuzzy popup; otherwise tmux's native window picker.
+        if command -v fzf >/dev/null 2>&1; then
+            tmux bind-key "$search_key" display-popup -E -w 60% -h 50% -T ' windows ' \
+                "$SCRIPTS_DIR/search.sh #{session_id}"
+        else
+            tmux bind-key "$search_key" choose-tree -Zw
+        fi
+    fi
+
     local skip_nav
     skip_nav="$(get_tmux_option "@sidetabs-skip-nav" "$DEFAULT_SKIP_NAV")"
     if [ "$skip_nav" = "on" ]; then
