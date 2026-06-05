@@ -63,6 +63,24 @@ RULE="$(printf '\xe2\x94\x80')"    # U+2500 box-drawing horizontal
 GIT_ICON="$(printf '\xee\x82\xa0')"  # U+E0A0 powerline branch
 DIR_ICON="$(printf '\xef\x81\xbb')"  # U+F07B folder
 TAB="$(printf '\t')"
+
+# Per-command icons (Nerd Font). Bytes are printf'd like the glyphs above so they
+# work under bash 3.2 (no $'\u'). Exact glyphs are tweakable; see get_icon below.
+ICON_EDITOR="$(printf '\xee\x98\xab')"  # U+E62B  vim/editor
+ICON_NODE="$(printf '\xee\x9c\x98')"    # U+E718  node/js
+ICON_PYTHON="$(printf '\xee\x98\x86')"  # U+E606  python
+ICON_RUBY="$(printf '\xee\x9c\xb9')"    # U+E739  ruby
+ICON_GO="$(printf '\xee\x98\xa7')"      # U+E627  go
+ICON_RUST="$(printf '\xee\x9e\xa8')"    # U+E7A8  rust
+ICON_GIT="$(printf '\xee\x9c\x82')"     # U+E702  git
+ICON_DOCKER="$(printf '\xee\x9e\xb0')"  # U+E7B0  docker/containers
+ICON_DB="$(printf '\xee\x9c\x86')"      # U+E706  database
+ICON_REMOTE="$(printf '\xef\x83\x82')"  # U+F0C2  ssh/cloud
+ICON_PAGER="$(printf '\xef\x80\xad')"   # U+F02D  pager/book
+ICON_LOGS="$(printf '\xef\x83\xb6')"    # U+F0F6  logs/file-text
+ICON_BUILD="$(printf '\xef\x82\xad')"   # U+F0AD  make/wrench
+ICON_SHELL="$(printf '\xef\x84\xa0')"   # U+F120  shell/terminal
+ICON_DEFAULT="$(printf '\xef\x84\x91')" # U+F111  default (filled circle)
 BOLD="${ESC}[1m"; NOBOLD="${ESC}[22m"; RESET="${ESC}[0m"
 hex_rgb() { local h="${1#\#}"; printf '%d;%d;%d' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}"; }
 
@@ -78,6 +96,7 @@ header_bg="$(get_tmux_option '@sidetabs-header-bg' '#5e81ac')"
 header_fg="$(get_tmux_option '@sidetabs-header-fg' '#2e3440')"
 summary_fg="$(get_tmux_option '@sidetabs-summary-fg' '#81a1c1')"
 summary_on="$(get_tmux_option '@sidetabs-summary' 'on')"
+icons_on="$(get_tmux_option '@sidetabs-icons' "$DEFAULT_ICONS")"
 
 # A segment paints bg+fg (no bold); its cap paints the segment's bg as fg over a
 # default bg so the trailing arrow "points" out of the colored block.
@@ -104,10 +123,10 @@ emit_header() {
     printf '%s%s%s%s%s%s%s%s\n' "$SEG_HDR" "$BOLD" "$label" "$NOBOLD" "$spaces" "$CAP_HDR" "$ARROW" "$RESET"
 }
 
-# emit_row <active> <bell> <activity> <idx> <flags> <name> <width> <collapsed>
+# emit_row <active> <bell> <activity> <idx> <flags> <name> <width> <collapsed> [icon]
 emit_row() {
-    local active="$1" bell="$2" activity="$3" idx="$4" flags="$5" name="$6" width="$7" collapsed="$8"
-    local seg cap avail nm used pad spaces
+    local active="$1" bell="$2" activity="$3" idx="$4" flags="$5" name="$6" width="$7" collapsed="$8" icon="${9:-}"
+    local seg cap avail nm used pad spaces icon_seg icon_w
     if [ "$bell" = "1" ]; then seg="$SEG_BELL"; cap="$CAP_BELL"
     elif [ "$active" = "1" ]; then seg="$SEG_ACTIVE"; cap="$CAP_ACTIVE"
     elif [ "$activity" = "1" ]; then seg="$SEG_ACT"; cap="$CAP_ACT"
@@ -116,29 +135,37 @@ emit_row() {
     avail=$((width - 1)); [ "$avail" -lt 0 ] && avail=0
 
     if [ "$collapsed" = "1" ]; then
-        used=$((1 + ${#idx}))
+        # " N<icon>" — icon (1 col) right after the bold number, not bold.
+        icon_w=0; [ -n "$icon" ] && icon_w=1
+        used=$((1 + ${#idx} + icon_w))
         pad=$((avail - used)); [ "$pad" -lt 0 ] && pad=0
         spaces="$(printf '%*s' "$pad" '')"
-        printf '%s %s%s%s%s%s%s%s\n' \
-            "$seg" "$BOLD" "$idx" "$NOBOLD" "$spaces" "$cap" "$ARROW" "$RESET"
+        printf '%s %s%s%s%s%s%s%s%s\n' \
+            "$seg" "$BOLD" "$idx" "$NOBOLD" "$icon" "$spaces" "$cap" "$ARROW" "$RESET"
         return
     fi
+
+    # Icon segment sits between the THIN separator and the name: " <icon>" (a
+    # leading space + 1-col glyph = 2 display columns). Width is hardcoded (like
+    # THIN) so it's locale-independent.
+    icon_seg=""; icon_w=0
+    [ -n "$icon" ] && { icon_seg=" ${icon}"; icon_w=2; }
 
     nm=" ${name}"
     [ -n "$flags" ] && nm="${nm} ${flags}"
     nm="${nm} "
-    used=$((1 + ${#idx} + 1 + 1 + ${#nm}))
+    used=$((1 + ${#idx} + 1 + 1 + icon_w + ${#nm}))
     if [ "$used" -gt "$avail" ]; then
         local over=$((used - avail)) newlen
         newlen=$((${#nm} - over)); [ "$newlen" -lt 0 ] && newlen=0
         nm="${nm:0:newlen}"
-        used=$((1 + ${#idx} + 1 + 1 + ${#nm}))
+        used=$((1 + ${#idx} + 1 + 1 + icon_w + ${#nm}))
     fi
     pad=$((avail - used)); [ "$pad" -lt 0 ] && pad=0
     spaces="$(printf '%*s' "$pad" '')"
 
-    printf '%s %s%s%s %s%s%s%s%s%s\n' \
-        "$seg" "$BOLD" "$idx" "$NOBOLD" "$THIN" "$nm" "$spaces" "$cap" "$ARROW" "$RESET"
+    printf '%s %s%s%s %s%s%s%s%s%s%s\n' \
+        "$seg" "$BOLD" "$idx" "$NOBOLD" "$THIN" "$icon_seg" "$nm" "$spaces" "$cap" "$ARROW" "$RESET"
 }
 
 # One dim summary line: " <icon> <text>", truncated to width with the icon kept.
@@ -213,6 +240,33 @@ emit_summary() {
     [ -n "$dirsraw" ] && emit_summary_icon "$DIR_ICON" "$dirsraw" "$width" tail
 }
 
+# Sets the global ICON to the glyph for window $1, using CMD_MAP (built in
+# build_lines): a space-separated "window_id:command" string. No subshell per
+# call (sets a global) and no associative arrays (bash 3.2).
+get_icon() {
+    local e cmd=""
+    for e in $CMD_MAP; do
+        case "$e" in "$1:"*) cmd="${e#*:}"; break ;; esac
+    done
+    case "$cmd" in
+        vim|nvim|vi|view)                 ICON="$ICON_EDITOR" ;;
+        node|nodejs|npm|npx|yarn|pnpm|bun|deno) ICON="$ICON_NODE" ;;
+        python|python3|ipython|pip|pip3)  ICON="$ICON_PYTHON" ;;
+        ruby|rails|irb|bundle)            ICON="$ICON_RUBY" ;;
+        go|gopls)                         ICON="$ICON_GO" ;;
+        cargo|rustc|rust-analyzer)        ICON="$ICON_RUST" ;;
+        git|lazygit|gitui|tig)            ICON="$ICON_GIT" ;;
+        docker|docker-compose|kubectl|k9s) ICON="$ICON_DOCKER" ;;
+        psql|mysql|redis-cli|sqlite3|mongosh) ICON="$ICON_DB" ;;
+        ssh|mosh|sshpass)                 ICON="$ICON_REMOTE" ;;
+        less|more|man|bat)                ICON="$ICON_PAGER" ;;
+        tail|journalctl|tailspin)         ICON="$ICON_LOGS" ;;
+        make|cmake|gcc|cc|clang|gradle)   ICON="$ICON_BUILD" ;;
+        bash|zsh|fish|sh|dash)            ICON="$ICON_SHELL" ;;
+        *)                                ICON="$ICON_DEFAULT" ;;
+    esac
+}
+
 # Build the visual lines (LINES[]) and a line-index -> window_id map (ROW_WIN[])
 # for click-to-select. Uses process substitution (done < <(...)) so the arrays
 # accumulate in THIS shell — a piped `while` would lose them to a subshell. A
@@ -221,7 +275,7 @@ emit_summary() {
 # summary lines (appended as plain lines, with no ROW_WIN entry).
 build_lines() {
     LINES=(); ROW_WIN=()
-    local collapsed width rule i sname fmt flags summ sline
+    local collapsed width rule i sname fmt flags summ sline icon
     collapsed="$(get_session_option "$SESSION_ID" "$COLLAPSED_OPTION" "0")"
     width="$(tmux display-message -p -t "$MY_PANE_ID" '#{pane_width}' 2>/dev/null)"
     [ -z "$width" ] && width=4
@@ -230,11 +284,23 @@ build_lines() {
     while [ "$i" -lt "$width" ]; do rule="${rule}${RULE}"; i=$((i + 1)); done
     rule="${RULE_SGR}${rule}${RESET}"
 
+    # window_id -> content command (active non-sidetab pane first), one query.
+    CMD_MAP=""
+    if [ "$icons_on" = "on" ]; then
+        CMD_MAP="$(tmux list-panes -s -t "$SESSION_ID" \
+            -F "#{window_id}${TAB}#{pane_active}${TAB}#{@is_sidetab}${TAB}#{pane_current_command}" \
+            2>/dev/null \
+            | awk -F"$TAB" '$3=="1"{next}
+                {if($2=="1"){c[$1]=$4} else if(!($1 in c)){c[$1]=$4}}
+                END{for(w in c) printf "%s:%s ", w, c[w]}')"
+    fi
+
     if [ "$collapsed" = "1" ]; then
         LINES+=("")                       # line 0: leading blank
         fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_index}${TAB}#{window_id}"
         while IFS="$TAB" read -r active bell activity idx wid; do
-            LINES+=("$(emit_row "$active" "$bell" "$activity" "$idx" "" "" "$width" 1)")
+            icon=""; [ "$icons_on" = "on" ] && { get_icon "$wid"; icon="$ICON"; }
+            LINES+=("$(emit_row "$active" "$bell" "$activity" "$idx" "" "" "$width" 1 "$icon")")
             ROW_WIN[$(( ${#LINES[@]} - 1 ))]="$wid"
         done < <(tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null)
         return
@@ -252,7 +318,8 @@ build_lines() {
         [ "$last" = "1" ] && flags="${flags}-"
         [ "$zoomed" = "1" ] && flags="${flags}Z"
         LINES+=("$rule")                              # rule line
-        LINES+=("$(emit_row "$active" "$bell" "$activity" "$idx" "$flags" "$name" "$width" 0)")
+        icon=""; [ "$icons_on" = "on" ] && { get_icon "$wid"; icon="$ICON"; }
+        LINES+=("$(emit_row "$active" "$bell" "$activity" "$idx" "$flags" "$name" "$width" 0 "$icon")")
         ROW_WIN[$(( ${#LINES[@]} - 1 ))]="$wid"       # index of the row just added
         if [ "$active" = "1" ] && [ "$summary_on" = "on" ]; then
             summ="$(emit_summary "$wid" "$width")"

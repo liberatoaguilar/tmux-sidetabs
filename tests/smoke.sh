@@ -88,4 +88,22 @@ now_win="$(tmux -L "$SOCKET" display-message -p -t main '#{window_id}')"
 [ "$now_win" = "$w0" ] || fail "header click changed window ($now_win), expected no change"
 pass "self-mouse header click is a no-op"
 
+# 10. Per-window icons: @sidetabs-icons on inserts a command glyph; off does not.
+#     Compare captures (robust to which glyph is chosen — bytes are tweakable).
+icon_sb="$(tmux -L "$SOCKET" list-panes -t main -F '#{pane_id} #{@is_sidetab}' | awk '$2==1{print $1}')"
+reload_sidebars() {
+  for q in $(tmux -L "$SOCKET" list-panes -a -F '#{pane_id} #{@is_sidetab}' | awk '$2==1{print $1}'); do
+    tmux -L "$SOCKET" respawn-pane -k -t "$q" "$PLUGIN_DIR/scripts/render.sh"
+  done
+  sleep 1
+}
+tmux -L "$SOCKET" set-option -g @sidetabs-icons off
+reload_sidebars
+cap_off="$(tmux -L "$SOCKET" capture-pane -p -t "$icon_sb")"
+tmux -L "$SOCKET" set-option -g @sidetabs-icons on
+reload_sidebars
+cap_on="$(tmux -L "$SOCKET" capture-pane -p -t "$icon_sb")"
+[ "$cap_on" != "$cap_off" ] || fail "icons on/off produced identical sidebar render"
+pass "icons change the sidebar rendering (on != off)"
+
 echo "ALL SMOKE TESTS PASSED"
