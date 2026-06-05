@@ -9,6 +9,9 @@ COLLAPSED_OPTION="@sidetabs_collapsed"
 WIDTH_OPTION="@sidetabs_width"                   # current expanded width (synced)
 LAST_REFRESH_OPTION="@sidetabs_last_refresh_ms"  # debounce stamp
 
+# Per-pane user options
+ROWMAP_OPTION="@sidetabs_rowmap"  # "lineidx:window_id ..." for the bg mouse reader
+
 # Active-tab summary cache (per-session) — avoids re-spawning git every second
 # across every window's sidetab. Recompute-on-miss is idempotent, so no lock.
 SUMMARY_CACHE_WIN="@sidetabs_sum_win"     # window id the cache is for

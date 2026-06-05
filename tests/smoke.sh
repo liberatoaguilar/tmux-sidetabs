@@ -106,4 +106,23 @@ cap_on="$(tmux -L "$SOCKET" capture-pane -p -t "$icon_sb")"
 [ "$cap_on" != "$cap_off" ] || fail "icons on/off produced identical sidebar render"
 pass "icons change the sidebar rendering (on != off)"
 
+# 11. Active-tab highlight follows window switches in MOUSE mode. Regression guard:
+#     the redraw loop must keep redrawing (sleep & wait, USR1-wakeable) and not
+#     block on input — otherwise the active '*' freezes when you switch windows.
+tmux -L "$SOCKET" set-option -g @sidetabs-mouse on
+tmux -L "$SOCKET" set-option -g @sidetabs-summary off
+tmux -L "$SOCKET" rename-window -t "$w0" AAA
+tmux -L "$SOCKET" rename-window -t "$w1" BBB
+reload_sidebars
+at_sb="$(tmux -L "$SOCKET" list-panes -t "$w0" -F '#{pane_id} #{@is_sidetab}' | awk '$2==1{print $1}')"
+tmux -L "$SOCKET" select-window -t "$w0"
+sleep 0.8
+cap_a="$(tmux -L "$SOCKET" capture-pane -p -t "$at_sb")"
+tmux -L "$SOCKET" select-window -t "$w1"
+sleep 0.8
+cap_b="$(tmux -L "$SOCKET" capture-pane -p -t "$at_sb")"
+echo "$cap_a" | grep -q 'AAA.*\*' || fail "active flag not on AAA when AAA is selected"
+echo "$cap_b" | grep -q 'BBB.*\*' || fail "active flag did not move to BBB after switching (sidebar froze)"
+pass "active-tab highlight follows window switches"
+
 echo "ALL SMOKE TESTS PASSED"

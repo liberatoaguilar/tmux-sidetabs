@@ -40,16 +40,15 @@ set_pane_option "$MY_PANE_ID" "$RENDER_PID_OPTION" "$$"
 # 1002/1003 motion tracking, so no motion spam.
 MOUSE_ON="$(get_tmux_option '@sidetabs-mouse' "$DEFAULT_MOUSE")"
 SAVED_STTY=""
-TICKER_PID=""
+MOUSE_READER_PID=""
 if [ "$MOUSE_ON" = "on" ]; then
     SAVED_STTY="$(stty -g 2>/dev/null || true)"
     stty -echo -icanon min 1 time 0 2>/dev/null || true
     printf '\033[?1000h\033[?1006h'
-    # bash 3.2 read -t is integer-only, so drive the 0.5s redraw with a USR1
-    # ticker; the blocking read below wakes on it (and on refresh.sh's USR1), and
-    # immediately on a real click. The ticker self-exits once the parent is gone.
-    ( while true; do sleep 0.5; kill -USR1 "$$" 2>/dev/null || exit 0; done ) &
-    TICKER_PID="$!"
+    # The background mouse_reader (started before the main loop) consumes clicks;
+    # the main loop is free to redraw on a timer. They must be separate: bash 3.2
+    # has no sub-second read -t, and a blocking read ignores USR1 — so a single
+    # read-driven loop can't also redraw on the 0.5s tick / refresh events.
 fi
 
 # Hide cursor; restore cursor + mouse + tty on exit.
@@ -58,7 +57,7 @@ cleanup() {
     printf '\033[?25h'
     [ "$MOUSE_ON" = "on" ] && printf '\033[?1000l\033[?1006l'
     [ -n "$SAVED_STTY" ] && stty "$SAVED_STTY" 2>/dev/null
-    [ -n "$TICKER_PID" ] && kill "$TICKER_PID" 2>/dev/null
+    [ -n "$MOUSE_READER_PID" ] && kill "$MOUSE_READER_PID" 2>/dev/null
 }
 trap 'cleanup; exit 0' EXIT INT TERM
 
@@ -274,6 +273,14 @@ get_icon() {
     esac
 }
 
+# Serialize ROW_WIN (line-index -> window_id) to a per-pane option so the
+# background mouse_reader can resolve clicks. Only called in mouse mode.
+write_rowmap() {
+    local k m=""
+    for k in "${!ROW_WIN[@]}"; do m="${m}${k}:${ROW_WIN[$k]} "; done
+    set_pane_option "$MY_PANE_ID" "$ROWMAP_OPTION" "$m"
+}
+
 # Build the visual lines (LINES[]) and a line-index -> window_id map (ROW_WIN[])
 # for click-to-select. Uses process substitution (done < <(...)) so the arrays
 # accumulate in THIS shell — a piped `while` would lose them to a subshell. A
@@ -310,6 +317,7 @@ build_lines() {
             LINES+=("$(emit_row "$active" "$bell" "$activity" "$idx" "" "" "$width" 1 "$icon")")
             ROW_WIN[$(( ${#LINES[@]} - 1 ))]="$wid"
         done < <(tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null)
+        [ "$MOUSE_ON" = "on" ] && write_rowmap
         return
     fi
 
@@ -335,6 +343,7 @@ build_lines() {
             fi
         fi
     done < <(tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null)
+    [ "$MOUSE_ON" = "on" ] && write_rowmap
 }
 
 draw_lines() {
@@ -346,45 +355,49 @@ draw_lines() {
     printf '\033[J'
 }
 
-# Map a click at SGR row Y (1-based) to a window and switch to it. SGR mouse
-# coordinates are pane-relative, so line index = Y - 1. Clicks on non-row lines
-# (header/rule/summary) map to no window and are a no-op (you're already here).
-# Focus stays in the new window's sidebar (like sidetab_nav.sh) so you can keep
-# clicking to browse — clicks only register while a sidebar is focused.
-on_click() {
-    local idx=$(( $1 - 1 )) wid sp
-    wid="${ROW_WIN[$idx]:-}"
-    [ -z "$wid" ] && return
-    tmux select-window -t "$wid" 2>/dev/null || return
-    sp="$(find_sidetab_pane "$wid")"
-    [ -n "$sp" ] && tmux select-pane -t "$sp" 2>/dev/null || true
+# Background click handler (mouse mode), run as a child so the main loop stays
+# free to redraw on a timer. Blocks reading SGR mouse sequences; a left-button
+# press maps SGR row Y (1-based, pane-relative -> line index Y-1) to a window via
+# the @sidetabs_rowmap pane option (written each draw by write_rowmap), selects
+# it, and keeps focus in that window's sidebar so you can keep clicking. A click
+# on a non-row line (header/rule/summary) maps to no window and is a no-op.
+mouse_reader() {
+    local c d seq idx wid sp rowmap e
+    while IFS= read -rsn1 c; do
+        [ "$c" = "$ESC" ] || continue
+        seq=""
+        while IFS= read -rsn1 d; do
+            seq+="$d"
+            case "$d" in [a-zA-Z]) break ;; esac
+        done
+        [[ "$seq" =~ ^\[\<([0-9]+)\;([0-9]+)\;([0-9]+)M$ ]] || continue
+        [ "${BASH_REMATCH[1]}" = "0" ] || continue
+        idx=$(( ${BASH_REMATCH[3]} - 1 ))
+        rowmap="$(get_pane_option "$MY_PANE_ID" "$ROWMAP_OPTION" "")"
+        wid=""
+        for e in $rowmap; do
+            case "$e" in "$idx:"*) wid="${e#*:}"; break ;; esac
+        done
+        [ -z "$wid" ] && continue
+        tmux select-window -t "$wid" 2>/dev/null || continue
+        sp="$(find_sidetab_pane "$wid")"
+        [ -n "$sp" ] && tmux select-pane -t "$sp" 2>/dev/null || true
+    done
 }
 
-# Wait up to ~1s for input. On a left-button SGR press (ESC [ < 0 ; x ; y M),
-# switch windows. On timeout or USR1 (the immediate-redraw signal) just return so
-# the loop redraws — preserving the 1s cadence.
-read_mouse() {
-    local c d seq b y
-    IFS= read -rsn1 c || return
-    [ "$c" = "$ESC" ] || return
-    seq=""
-    while IFS= read -rsn1 d; do
-        seq+="$d"
-        case "$d" in [a-zA-Z]) break ;; esac
-    done
-    if [[ "$seq" =~ ^\[\<([0-9]+)\;([0-9]+)\;([0-9]+)M$ ]]; then
-        b="${BASH_REMATCH[1]}"; y="${BASH_REMATCH[3]}"
-        [ "$b" = "0" ] && on_click "$y"
-    fi
-}
+# In mouse mode a background reader consumes clicks; the main loop just redraws on
+# a 0.5s timer, woken early by refresh.sh's USR1 (which interrupts `wait`) for
+# instant updates on window switches, bells, renames, etc.
+if [ "$MOUSE_ON" = "on" ]; then
+    # < /dev/tty because bash redirects a backgrounded job's stdin to /dev/null
+    # (job control off); without this the reader hits EOF and exits immediately.
+    mouse_reader < /dev/tty &
+    MOUSE_READER_PID="$!"
+fi
 
 while true; do
     build_lines
     draw_lines
-    if [ "$MOUSE_ON" = "on" ]; then
-        read_mouse
-    else
-        sleep 0.5 &
-        wait $! 2>/dev/null
-    fi
+    sleep 0.5 &
+    wait $! 2>/dev/null
 done
