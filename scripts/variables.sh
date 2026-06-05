@@ -23,3 +23,11 @@ DEFAULT_COLLAPSED_WIDTH="4"
 DEFAULT_TOGGLE_KEY="Tab"
 DEFAULT_SKIP_NAV="on"
 REFRESH_DEBOUNCE_MS="100"
+
+# Width-sync feedback guard. Propagating a resize to the other windows fires
+# window-layout-changed -> sync_width.sh for each of them; while armed, events
+# from windows OTHER than the guard owner are ignored, so propagation can't
+# re-trigger itself into an oscillation. The owning (source) window stays live.
+SYNC_GUARD_OPTION="@sidetabs_sync_until"  # epoch ms until which echo-sync is suppressed
+SYNC_GUARD_WIN_OPTION="@sidetabs_sync_win" # window that owns the guard (stays live)
+SYNC_GUARD_MS="250"
