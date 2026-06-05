@@ -19,10 +19,11 @@ SUMMARY_TTL_MS="2000"
 
 # Defaults (overridable via user options)
 DEFAULT_EXPANDED_WIDTH="20"
-DEFAULT_COLLAPSED_WIDTH="4"
+DEFAULT_COLLAPSED_WIDTH="5"   # was 4; room for "N + icon" in collapsed mode
 DEFAULT_TOGGLE_KEY="Tab"
 DEFAULT_SKIP_NAV="on"
 DEFAULT_MOUSE="off"
+DEFAULT_ICONS="on"
 REFRESH_DEBOUNCE_MS="100"
 
 # Width-sync feedback guard. Propagating a resize to the other windows fires
