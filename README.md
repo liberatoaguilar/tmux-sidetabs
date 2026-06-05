@@ -58,7 +58,7 @@ run-shell '/path/to/tmux-sidetabs/sidetabs.tmux'
 | `C-r` (in sidebar) | Rename the current window (prefilled) |
 | `C-x` (in sidebar) | Kill the current window (with `y/n` confirm) |
 | `M-k` / `M-j` (in sidebar) | Move the current window up / down (reorder) |
-| Left-click a window row | Select that window and focus its content pane (needs `@sidetabs-mouse on` + tmux `mouse on`) |
+| Left-click a window row (while in the sidebar) | Switch to that window and focus its content pane (needs `@sidetabs-mouse on`; no global tmux mouse) |
 
 `C-j` / `C-k` outside the sidebar keep their normal `select-pane -D/-U` behavior
 (and forward to vim when a vim-like process has focus). The window-management
@@ -74,7 +74,7 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-expanded-width` | `20` | Cols in expanded mode |
 | `@sidetabs-collapsed-width` | `4` | Cols in collapsed mode |
 | `@sidetabs-skip-nav` | `on` | `off` to leave `C-j` / `C-k` untouched |
-| `@sidetabs-mouse` | `off` | `on` to enable left-click-to-select in the sidebar (requires tmux `set -g mouse on`) |
+| `@sidetabs-mouse` | `off` | `on` to click a row to switch windows while the sidebar is focused (no global tmux `mouse` needed) |
 | `@sidetabs-uninstall-key` | (unset) | Prefix key to uninstall in-session |
 | `@sidetabs-summary` | `on` | `off` to hide the summary under the active window |
 | `@sidetabs-active-bg` | `#88c0d0` | Active-row background (nord8) |
@@ -116,10 +116,13 @@ original `C-h` / `C-j` / `C-k` bindings.)
   `@sidetabs-skip-nav off` and wire your own bindings, or edit `sidetabs.tmux`.
 - Designed for tmux session continuity, not full server restarts — sidetab panes
   and their markers do not survive `kill-server`.
-- `@sidetabs-mouse on` requires tmux's own `set -g mouse on` (the plugin does not
-  enable it for you). It rebinds `MouseDown1Pane`; clicks outside the sidebar keep
-  tmux's default behavior (and click-drag text selection is untouched). Toggling
-  the option takes effect on the next config reload.
+- `@sidetabs-mouse on` does **not** need tmux's global `mouse` option. The sidebar
+  pane enables its own mouse reporting (the same way Claude Code and other TUIs do)
+  and reads its own clicks, so your terminal's native text selection in other panes
+  is untouched. Because tmux only delivers mouse events to the focused pane, clicks
+  register only while the sidebar is focused — the workflow is `C-h` into the
+  sidebar, then click a row to jump to that window. Takes effect on the next config
+  reload (or when the sidebar panes are recreated).
 
 ## Tests
 
