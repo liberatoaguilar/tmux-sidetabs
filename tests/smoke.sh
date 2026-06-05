@@ -51,4 +51,13 @@ w3="$(tmux -L "$SOCKET" display-message -p -t "$sidetab" '#{pane_width}')"
 [ "$w3" -ge 18 ] && [ "$w3" -le 22 ] || fail "re-expanded width unexpected: $w3"
 pass "re-expanded width = $w3"
 
+# 8. Rowmap is emitted and well-formed (expanded mode, 2 windows).
+sleep 0.4
+rowmap="$(tmux -L "$SOCKET" show-option -t main -qv @sidetabs_rowmap)"
+[ -n "$rowmap" ] || fail "rowmap empty"
+for e in $rowmap; do
+  echo "$e" | grep -Eq '^[0-9]+:@[0-9]+$' || fail "rowmap entry malformed: $e"
+done
+pass "rowmap well-formed — $rowmap"
+
 echo "ALL SMOKE TESTS PASSED"

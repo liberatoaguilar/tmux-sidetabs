@@ -195,7 +195,7 @@ emit_summary() {
 }
 
 emit_lines() {
-    local collapsed width fmt rule i sname
+    local collapsed width fmt rule i sname y map summ n
     collapsed="$(get_session_option "$SESSION_ID" "$COLLAPSED_OPTION" "0")"
     width="$(tmux display-message -p -t "$MY_PANE_ID" '#{pane_width}' 2>/dev/null)"
     [ -z "$width" ] && width=4
@@ -204,34 +204,53 @@ emit_lines() {
     while [ "$i" -lt "$width" ]; do rule="${rule}${RULE}"; i=$((i + 1)); done
     rule="${RULE_SGR}${rule}${RESET}"
 
+    # As we draw, build "$map" — a "y:window_id ..." mapping of clickable rows for
+    # click-to-select (see click.sh). The window loops use process substitution
+    # (done < <(...)) rather than a pipe so the y counter and map survive the loop;
+    # a piped `while` would run in a subshell and lose them. set_session_option is
+    # a tmux side effect, so it persists even though emit_lines runs as the left
+    # side of draw()'s pipe.
+
     if [ "$collapsed" = "1" ]; then
-        printf '\n'
-        fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_index}"
-        tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null \
-            | while IFS="$TAB" read -r active bell activity idx; do
-                emit_row "$active" "$bell" "$activity" "$idx" "" "" "$width" 1
-              done
+        printf '\n'                       # line 0: leading blank
+        y=1; map=""
+        fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_index}${TAB}#{window_id}"
+        while IFS="$TAB" read -r active bell activity idx wid; do
+            emit_row "$active" "$bell" "$activity" "$idx" "" "" "$width" 1
+            map="${map}${map:+ }${y}:${wid}"
+            y=$((y + 1))
+        done < <(tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null)
+        set_session_option "$SESSION_ID" "$ROWMAP_OPTION" "$map"
         return
     fi
 
     sname="$(tmux display-message -p -t "$SESSION_ID" '#{session_name}' 2>/dev/null)"
-    emit_header "$sname" "$width"
+    emit_header "$sname" "$width"         # line 0: header
 
     # All fields are non-empty booleans/numbers/ids (no #{window_flags}, which can
     # be empty and would collapse under tab-splitting). Flags are rebuilt below.
+    y=1; map=""
     fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_last_flag}${TAB}#{window_zoomed_flag}${TAB}#{window_index}${TAB}#{window_id}${TAB}#{window_name}"
-    tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null \
-        | while IFS="$TAB" read -r active bell activity last zoomed idx wid name; do
-            flags=""
-            [ "$active" = "1" ] && flags="*"
-            [ "$last" = "1" ] && flags="${flags}-"
-            [ "$zoomed" = "1" ] && flags="${flags}Z"
-            printf '%s\n' "$rule"
-            emit_row "$active" "$bell" "$activity" "$idx" "$flags" "$name" "$width" 0
-            if [ "$active" = "1" ] && [ "$summary_on" = "on" ]; then
-                emit_summary "$wid" "$width"
+    while IFS="$TAB" read -r active bell activity last zoomed idx wid name; do
+        flags=""
+        [ "$active" = "1" ] && flags="*"
+        [ "$last" = "1" ] && flags="${flags}-"
+        [ "$zoomed" = "1" ] && flags="${flags}Z"
+        printf '%s\n' "$rule"             # rule line
+        y=$((y + 1))
+        emit_row "$active" "$bell" "$activity" "$idx" "$flags" "$name" "$width" 0
+        map="${map}${map:+ }${y}:${wid}"  # y now points at the row just emitted
+        y=$((y + 1))
+        if [ "$active" = "1" ] && [ "$summary_on" = "on" ]; then
+            summ="$(emit_summary "$wid" "$width")"
+            if [ -n "$summ" ]; then
+                printf '%s\n' "$summ"
+                n="$(printf '%s\n' "$summ" | grep -c '')"
+                y=$((y + n))
             fi
-          done
+        fi
+    done < <(tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null)
+    set_session_option "$SESSION_ID" "$ROWMAP_OPTION" "$map"
 }
 
 draw() {
