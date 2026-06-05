@@ -40,10 +40,16 @@ set_pane_option "$MY_PANE_ID" "$RENDER_PID_OPTION" "$$"
 # 1002/1003 motion tracking, so no motion spam.
 MOUSE_ON="$(get_tmux_option '@sidetabs-mouse' "$DEFAULT_MOUSE")"
 SAVED_STTY=""
+TICKER_PID=""
 if [ "$MOUSE_ON" = "on" ]; then
     SAVED_STTY="$(stty -g 2>/dev/null || true)"
     stty -echo -icanon min 1 time 0 2>/dev/null || true
     printf '\033[?1000h\033[?1006h'
+    # bash 3.2 read -t is integer-only, so drive the 0.5s redraw with a USR1
+    # ticker; the blocking read below wakes on it (and on refresh.sh's USR1), and
+    # immediately on a real click. The ticker self-exits once the parent is gone.
+    ( while true; do sleep 0.5; kill -USR1 "$$" 2>/dev/null || exit 0; done ) &
+    TICKER_PID="$!"
 fi
 
 # Hide cursor; restore cursor + mouse + tty on exit.
@@ -52,6 +58,7 @@ cleanup() {
     printf '\033[?25h'
     [ "$MOUSE_ON" = "on" ] && printf '\033[?1000l\033[?1006l'
     [ -n "$SAVED_STTY" ] && stty "$SAVED_STTY" 2>/dev/null
+    [ -n "$TICKER_PID" ] && kill "$TICKER_PID" 2>/dev/null
 }
 trap 'cleanup; exit 0' EXIT INT TERM
 
@@ -358,10 +365,10 @@ on_click() {
 # the loop redraws — preserving the 1s cadence.
 read_mouse() {
     local c d seq b y
-    IFS= read -rsn1 -t 1 c || return
+    IFS= read -rsn1 c || return
     [ "$c" = "$ESC" ] || return
     seq=""
-    while IFS= read -rsn1 -t 1 d; do
+    while IFS= read -rsn1 d; do
         seq+="$d"
         case "$d" in [a-zA-Z]) break ;; esac
     done
@@ -377,7 +384,7 @@ while true; do
     if [ "$MOUSE_ON" = "on" ]; then
         read_mouse
     else
-        sleep 1 &
+        sleep 0.5 &
         wait $! 2>/dev/null
     fi
 done
