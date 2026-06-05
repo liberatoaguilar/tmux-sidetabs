@@ -125,4 +125,22 @@ echo "$cap_a" | grep -q 'AAA.*\*' || fail "active flag not on AAA when AAA is se
 echo "$cap_b" | grep -q 'BBB.*\*' || fail "active flag did not move to BBB after switching (sidebar froze)"
 pass "active-tab highlight follows window switches"
 
+# 12. search.sh list mode: one candidate line per current-session window, each
+#     prefixed with its @window_id and containing the window name.
+tmux -L "$SOCKET" run-shell "SIDETABS_SEARCH_LIST=1 '$PLUGIN_DIR/scripts/search.sh' main > /tmp/sl_$$ 2>&1"
+slist="$(cat /tmp/sl_$$ 2>/dev/null)"; rm -f /tmp/sl_$$
+ncand="$(printf '%s\n' "$slist" | grep -c '^@')"
+[ "$ncand" -ge 2 ] || fail "search list expected >=2 windows, got $ncand: $slist"
+printf '%s\n' "$slist" | grep -q 'AAA' || fail "search list missing window name AAA"
+pass "search list-mode produced $ncand candidates"
+
+# 13. search.sh pick mode: selecting a window switches to it and focuses its sidebar.
+tmux -L "$SOCKET" select-window -t "$w1"
+tmux -L "$SOCKET" run-shell "SIDETABS_SEARCH_PICK='$w0' '$PLUGIN_DIR/scripts/search.sh' main"
+sleep 0.3
+psel="$(tmux -L "$SOCKET" display-message -p -t main '#{window_id} #{@is_sidetab}')"
+[ "${psel%% *}" = "$w0" ] || fail "search pick selected ${psel%% *}, expected $w0"
+[ "${psel##* }" = "1" ] || fail "search pick didn't focus the sidebar"
+pass "search pick switched to $w0 and focused its sidebar"
+
 echo "ALL SMOKE TESTS PASSED"
