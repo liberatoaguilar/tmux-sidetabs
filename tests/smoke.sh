@@ -87,4 +87,17 @@ sel2="$(tmux -L "$SOCKET" display-message -p -t main '#{pane_id}')"
 [ "$sel2" = "$new_sidetab" ] || fail "no-row click didn't focus sidebar (got $sel2)"
 pass "no-row click focused the sidebar pane"
 
+# 11. Default (mouse off): MouseDown1Pane is NOT our handler.
+binding_off="$(tmux -L "$SOCKET" list-keys -T root 2>/dev/null | grep MouseDown1Pane || true)"
+echo "$binding_off" | grep -q 'click.sh' && fail "click.sh bound while @sidetabs-mouse off"
+pass "no click binding when mouse off"
+
+# 12. With @sidetabs-mouse on, re-sourcing installs the click binding.
+tmux -L "$SOCKET" set-option -g @sidetabs-mouse on
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/sidetabs.tmux"
+sleep 0.2
+binding_on="$(tmux -L "$SOCKET" list-keys -T root 2>/dev/null | grep MouseDown1Pane || true)"
+echo "$binding_on" | grep -q 'click.sh' || fail "MouseDown1Pane not bound to click.sh when mouse on"
+pass "MouseDown1Pane bound when @sidetabs-mouse on"
+
 echo "ALL SMOKE TESTS PASSED"

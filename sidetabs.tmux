@@ -43,6 +43,19 @@ bind_keys() {
         tmux bind-key "$uninstall_key" run-shell "$SCRIPTS_DIR/uninstall.sh"
     fi
 
+    local mouse
+    mouse="$(get_tmux_option "@sidetabs-mouse" "$DEFAULT_MOUSE")"
+    if [ "$mouse" = "on" ]; then
+        # Left-click a sidetab row -> click.sh selects the window. The ELSE branch
+        # reproduces tmux's stock MouseDown1Pane so clicks on normal panes are
+        # untouched. -t '#{mouse_pane}' evaluates @is_sidetab for the MOUSED pane
+        # (keys.conf checks the focused pane; here we need the one under the cursor).
+        tmux bind-key -n MouseDown1Pane \
+            "if-shell -F -t '#{mouse_pane}' '#{==:#{@is_sidetab},1}' \
+                'run-shell \"$SCRIPTS_DIR/click.sh #{mouse_y} #{mouse_pane}\"' \
+                'select-pane -t= ; send-keys -M'"
+    fi
+
     local skip_nav
     skip_nav="$(get_tmux_option "@sidetabs-skip-nav" "$DEFAULT_SKIP_NAV")"
     if [ "$skip_nav" = "on" ]; then
