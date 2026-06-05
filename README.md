@@ -9,6 +9,9 @@ A persistent left-side window-list sidebar for tmux. Inspired by [cmux](https://
 - Each row shows a Nerd Font icon for the command running in that window's content
   pane (editor, server, shell, db, …); the collapsed strip shows the number + icon.
   Toggle with `@sidetabs-icons`.
+- `prefix + /` opens a fuzzy-search popup over the current session's windows
+  (search by name, running command, or directory) and jumps to the one you pick.
+  Uses fzf when available, otherwise tmux's built-in `choose-tree`.
 - Under the active window, a cmux-style summary shows the git branch + latest
   commit subject () and the working directory(ies) of its panes (), joined
   by ` | ` when there are multiple panes. Toggle with `@sidetabs-summary`.
@@ -62,6 +65,7 @@ run-shell '/path/to/tmux-sidetabs/sidetabs.tmux'
 | `C-x` (in sidebar) | Kill the current window (with `y/n` confirm) |
 | `M-k` / `M-j` (in sidebar) | Move the current window up / down (reorder) |
 | Left-click a window row (while in the sidebar) | Switch to that window; focus stays in the sidebar so you can keep clicking (needs `@sidetabs-mouse on`; no global tmux mouse) |
+| `prefix + /` | Fuzzy-search this session's windows in a popup and jump to one |
 
 `C-j` / `C-k` outside the sidebar keep their normal `select-pane -D/-U` behavior
 (and forward to vim when a vim-like process has focus). The window-management
@@ -79,6 +83,7 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-skip-nav` | `on` | `off` to leave `C-j` / `C-k` untouched |
 | `@sidetabs-mouse` | `off` | `on` to click a row to switch windows while the sidebar is focused (no global tmux `mouse` needed) |
 | `@sidetabs-icons` | `on` | `off` to hide the per-window command icon |
+| `@sidetabs-search-key` | `/` | Prefix key to open the fuzzy window-search popup (needs fzf; falls back to `choose-tree`) |
 | `@sidetabs-uninstall-key` | (unset) | Prefix key to uninstall in-session |
 | `@sidetabs-summary` | `on` | `off` to hide the summary under the active window |
 | `@sidetabs-active-bg` | `#88c0d0` | Active-row background (nord8) |
