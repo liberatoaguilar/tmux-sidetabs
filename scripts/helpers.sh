@@ -49,9 +49,14 @@ pane_is_sidetab() {
     [ "$(get_pane_option "$pane_id" "@is_sidetab" "0")" = "1" ]
 }
 
-# Current epoch ms (portable: uses python3 if available, otherwise date+nanoseconds).
+# Current epoch ms. Runs on every refresh hook, so startup cost matters: prefer
+# perl (~0-2ms, ms precision) over python3 (~30ms cold-start, ~15x slower) to avoid
+# a process-spawn storm. date fallback is seconds-only — too coarse for the 100ms
+# REFRESH_DEBOUNCE_MS, so it's a last resort only.
 now_ms() {
-    if command -v python3 >/dev/null 2>&1; then
+    if command -v perl >/dev/null 2>&1; then
+        perl -MTime::HiRes=time -e 'printf "%d\n", time()*1000'
+    elif command -v python3 >/dev/null 2>&1; then
         python3 -c 'import time; print(int(time.time()*1000))'
     else
         # macOS date doesn't support %N; fall back to seconds*1000.
