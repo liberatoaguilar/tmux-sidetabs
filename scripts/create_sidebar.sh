@@ -16,6 +16,10 @@ source "$CURRENT_DIR/helpers.sh"
 WINDOW_ID="$1"
 [ -z "$WINDOW_ID" ] && exit 0
 
+# Stand down while a tmux-resurrect restore is in progress; resurrect_post.sh
+# clears the flag and rebuilds sidebars cleanly once the restore settles.
+[ "$(get_tmux_option "$RESTORING_OPTION" "0")" = "1" ] && exit 0
+
 SESSION_ID="$(tmux display-message -p -t "$WINDOW_ID" '#{session_id}' 2>/dev/null)"
 
 if window_has_sidetab "$WINDOW_ID"; then

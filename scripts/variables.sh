@@ -4,6 +4,11 @@
 SIDETAB_MARKER="@is_sidetab"
 RENDER_PID_OPTION="@sidetabs_render_pid"
 
+# Global flag (set during a tmux-resurrect restore): create_sidebar.sh stands
+# down while it's "1" so the restore can't spawn duplicate sidetabs; the
+# resurrect post-restore hook clears it and rebuilds clean sidebars.
+RESTORING_OPTION="@sidetabs_restoring"
+
 # Per-session user options
 COLLAPSED_OPTION="@sidetabs_collapsed"
 WIDTH_OPTION="@sidetabs_width"                   # current expanded width (synced)
