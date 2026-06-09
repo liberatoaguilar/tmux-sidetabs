@@ -124,13 +124,21 @@ emit_row() {
     avail=$((width - 1)); [ "$avail" -lt 0 ] && avail=0
 
     if [ "$collapsed" = "1" ]; then
-        # " N<icon>" — icon (1 col) right after the bold number, not bold.
-        icon_w=0; [ -n "$icon" ] && icon_w=1
+        # " N <icon>" — space + icon (1 col) after the bold number, not bold.
+        # The space is dropped when it wouldn't fit (e.g. 2-digit index at the
+        # default collapsed width of 5) so the row never wraps.
+        icon_seg=""; icon_w=0
+        if [ -n "$icon" ]; then
+            icon_seg=" ${icon}"; icon_w=2
+            if [ $((1 + ${#idx} + icon_w)) -gt "$avail" ]; then
+                icon_seg="$icon"; icon_w=1
+            fi
+        fi
         used=$((1 + ${#idx} + icon_w))
         pad=$((avail - used)); [ "$pad" -lt 0 ] && pad=0
         spaces="$(printf '%*s' "$pad" '')"
         printf '%s %s%s%s%s%s%s%s%s\n' \
-            "$seg" "$BOLD" "$idx" "$NOBOLD" "$icon" "$spaces" "$cap" "$ARROW" "$RESET"
+            "$seg" "$BOLD" "$idx" "$NOBOLD" "$icon_seg" "$spaces" "$cap" "$ARROW" "$RESET"
         return
     fi
 
