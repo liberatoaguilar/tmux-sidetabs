@@ -12,8 +12,7 @@
 #   ────────────────────            rule
 #   ` N ‹thin› name flags … ‹cap›`  one full-width pill per window
 #   <summary lines>                 under the ACTIVE window only
-# State colors (nord by default): bell = red, active = teal, activity = yellow
-# text, idle = grey. Only the number is bold.
+# State colors (nord by default): bell = red, flag = user preset, active = teal, activity = yellow text, idle = grey. Precedence: bell > flag > active > activity. Only the number is bold.
 
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$CURRENT_DIR/variables.sh"
@@ -69,6 +68,8 @@ THIN="$(printf '\xee\x82\xb1')"    # U+E0B1 powerline right separator (thin)
 RULE="$(printf '\xe2\x94\x80')"    # U+2500 box-drawing horizontal
 GIT_ICON="$(printf '\xee\x82\xa0')"  # U+E0A0 powerline branch
 DIR_ICON="$(printf '\xef\x81\xbb')"  # U+F07B folder
+TIMER_RUN_ICON="$(printf '\xef\x81\x8b')"    # U+F04B nerd-font play
+TIMER_PAUSE_ICON="$(printf '\xef\x81\x8c')"  # U+F04C nerd-font pause
 TAB="$(printf '\t')"
 BOLD="${ESC}[1m"; NOBOLD="${ESC}[22m"; RESET="${ESC}[0m"
 hex_rgb() { local h="${1#\#}"; printf '%d;%d;%d' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}"; }
@@ -86,6 +87,8 @@ header_fg="$(get_tmux_option '@sidetabs-header-fg' '#2e3440')"
 summary_fg="$(get_tmux_option '@sidetabs-summary-fg' '#81a1c1')"
 summary_on="$(get_tmux_option '@sidetabs-summary' 'on')"
 icons_on="$(get_tmux_option '@sidetabs-icons' "$DEFAULT_ICONS")"
+flag_fg="$(get_tmux_option '@sidetabs-flag-fg' '#2e3440')"
+flag_colors="$(get_tmux_option '@sidetabs-flag-colors' "$DEFAULT_FLAG_COLORS")"
 
 # A segment paints bg+fg (no bold); its cap paints the segment's bg as fg over a
 # default bg so the trailing arrow "points" out of the colored block.
@@ -100,6 +103,15 @@ SEG_HDR="$(seg_sgr "$header_bg" "$header_fg")";    CAP_HDR="$(cap_sgr "$header_b
 RULE_SGR="${ESC}[49;38;2;$(hex_rgb "$rule_fg")m"
 SUMMARY_SGR="${ESC}[49;38;2;$(hex_rgb "$summary_fg")m"
 
+# Flag pill colors: 1-based indexed arrays (bash 3.2 — no assoc arrays); the
+# index matches the @sidetabs_flag window option directly, no translation.
+SEG_FLAG=(); CAP_FLAG=(); FLAG_N=0
+for _c in $flag_colors; do
+    FLAG_N=$((FLAG_N + 1))
+    SEG_FLAG[$FLAG_N]="$(seg_sgr "$_c" "$flag_fg")"
+    CAP_FLAG[$FLAG_N]="$(cap_sgr "$_c")"
+done
+
 # A full-width header pill (bold) for the session name.
 emit_header() {
     local label="$1" width="$2" avail used pad spaces
@@ -112,11 +124,14 @@ emit_header() {
     printf '%s%s%s%s%s%s%s%s\n' "$SEG_HDR" "$BOLD" "$label" "$NOBOLD" "$spaces" "$CAP_HDR" "$ARROW" "$RESET"
 }
 
-# emit_row <active> <bell> <activity> <idx> <flags> <name> <width> <collapsed> [icon]
+# emit_row <active> <bell> <activity> <flagidx> <idx> <flags> <name> <width> <collapsed> [icon]
 emit_row() {
-    local active="$1" bell="$2" activity="$3" idx="$4" flags="$5" name="$6" width="$7" collapsed="$8" icon="${9:-}"
+    local active="$1" bell="$2" activity="$3" flagidx="$4" idx="$5" flags="$6" name="$7" width="$8" collapsed="$9" icon="${10:-}"
     local seg cap avail nm used pad spaces icon_seg icon_w
+    case "$flagidx" in ''|*[!0-9]*) flagidx=0 ;; esac   # unset/garbage -> no flag
     if [ "$bell" = "1" ]; then seg="$SEG_BELL"; cap="$CAP_BELL"
+    elif [ "$flagidx" -ge 1 ] && [ "$flagidx" -le "$FLAG_N" ]; then
+        seg="${SEG_FLAG[$flagidx]}"; cap="${CAP_FLAG[$flagidx]}"
     elif [ "$active" = "1" ]; then seg="$SEG_ACTIVE"; cap="$CAP_ACTIVE"
     elif [ "$activity" = "1" ]; then seg="$SEG_ACT"; cap="$CAP_ACT"
     else seg="$SEG_IDLE"; cap="$CAP_IDLE"; fi
@@ -163,6 +178,14 @@ emit_row() {
 
     printf '%s %s%s%s %s%s%s%s%s%s%s\n' \
         "$seg" "$BOLD" "$idx" "$NOBOLD" "$THIN" "$icon_seg" "$nm" "$spaces" "$cap" "$ARROW" "$RESET"
+}
+
+# seconds -> HH:MM:SS (pure bash arithmetic; hours may exceed 99).
+fmt_hms() {
+    local s="$1" h m
+    case "$s" in ''|*[!0-9]*) s=0 ;; esac
+    h=$((s / 3600)); m=$((s % 3600 / 60)); s=$((s % 60))
+    printf '%02d:%02d:%02d' "$h" "$m" "$s"
 }
 
 # One dim summary line: " <icon> <text>", truncated to width with the icon kept.
@@ -260,11 +283,12 @@ write_rowmap() {
 # for click-to-select. Uses process substitution (done < <(...)) so the arrays
 # accumulate in THIS shell — a piped `while` would lose them to a subshell. A
 # row's line index is "${#LINES[@]} - 1" right after it's appended, which keeps the
-# map correct across the header, the per-window rules, and the active window's 0-2
-# summary lines (appended as plain lines, with no ROW_WIN entry).
+# map correct across the header, the per-window rules, each window's timer line, and
+# the active window's 0-2 summary lines (all appended as plain lines, with no
+# ROW_WIN entry, so clicks on them stay no-ops).
 build_lines() {
     LINES=(); ROW_WIN=()
-    local collapsed width rule i sname fmt flags summ sline icon
+    local collapsed width rule i sname fmt flags summ sline icon now_s telapsed tlive tic
     collapsed="$(get_session_option "$SESSION_ID" "$COLLAPSED_OPTION" "0")"
     width="$(tmux display-message -p -t "$MY_PANE_ID" '#{pane_width}' 2>/dev/null)"
     [ -z "$width" ] && width=4
@@ -286,10 +310,10 @@ build_lines() {
 
     if [ "$collapsed" = "1" ]; then
         LINES+=("")                       # line 0: leading blank
-        fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_index}${TAB}#{window_id}"
-        while IFS="$TAB" read -r active bell activity idx wid; do
+        fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{?${FLAG_OPTION},#{${FLAG_OPTION}},0}${TAB}#{window_index}${TAB}#{window_id}"
+        while IFS="$TAB" read -r active bell activity flagidx idx wid; do
             icon=""; [ "$icons_on" = "on" ] && { get_icon "$wid"; icon="$ICON"; }
-            LINES+=("$(emit_row "$active" "$bell" "$activity" "$idx" "" "" "$width" 1 "$icon")")
+            LINES+=("$(emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "" "" "$width" 1 "$icon")")
             ROW_WIN[$(( ${#LINES[@]} - 1 ))]="$wid"
         done < <(tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null)
         [ "$MOUSE_ON" = "on" ] && write_rowmap
@@ -298,19 +322,30 @@ build_lines() {
 
     sname="$(tmux display-message -p -t "$SESSION_ID" '#{session_name}' 2>/dev/null)"
     LINES+=("$(emit_header "$sname" "$width")")   # line 0: header
+    now_s="$(date +%s)"
 
     # All fields are non-empty booleans/numbers/ids (no #{window_flags}, which can
     # be empty and would collapse under tab-splitting). Flags are rebuilt below.
-    fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_last_flag}${TAB}#{window_zoomed_flag}${TAB}#{window_index}${TAB}#{window_id}${TAB}#{window_name}"
-    while IFS="$TAB" read -r active bell activity last zoomed idx wid name; do
+    fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_last_flag}${TAB}#{window_zoomed_flag}${TAB}#{?${FLAG_OPTION},#{${FLAG_OPTION}},0}${TAB}#{?${TIMER_STATE_OPTION},#{${TIMER_STATE_OPTION}},-}${TAB}#{?${TIMER_START_OPTION},#{${TIMER_START_OPTION}},0}${TAB}#{?${TIMER_ACC_OPTION},#{${TIMER_ACC_OPTION}},0}${TAB}#{window_index}${TAB}#{window_id}${TAB}#{window_name}"
+    while IFS="$TAB" read -r active bell activity last zoomed flagidx tstate tstart tacc idx wid name; do
         flags=""
         [ "$active" = "1" ] && flags="*"
         [ "$last" = "1" ] && flags="${flags}-"
         [ "$zoomed" = "1" ] && flags="${flags}Z"
         LINES+=("$rule")                              # rule line
         icon=""; [ "$icons_on" = "on" ] && { get_icon "$wid"; icon="$ICON"; }
-        LINES+=("$(emit_row "$active" "$bell" "$activity" "$idx" "$flags" "$name" "$width" 0 "$icon")")
+        LINES+=("$(emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "$flags" "$name" "$width" 0 "$icon")")
         ROW_WIN[$(( ${#LINES[@]} - 1 ))]="$wid"       # index of the row just added
+        if [ "$tstate" = "run" ] || [ "$tstate" = "pause" ]; then
+            case "$tacc" in ''|*[!0-9]*) tacc=0 ;; esac
+            telapsed="$tacc"; tic="$TIMER_PAUSE_ICON"
+            if [ "$tstate" = "run" ]; then
+                case "$tstart" in ''|*[!0-9]*) tstart="$now_s" ;; esac
+                tlive=$((now_s - tstart)); [ "$tlive" -lt 0 ] && tlive=0   # clock skew clamp
+                telapsed=$((tacc + tlive)); tic="$TIMER_RUN_ICON"
+            fi
+            LINES+=("$(emit_summary_icon "$tic" "$(fmt_hms "$telapsed")" "$width" head)")
+        fi
         if [ "$active" = "1" ] && [ "$summary_on" = "on" ]; then
             summ="$(emit_summary "$wid" "$width")"
             if [ -n "$summ" ]; then
