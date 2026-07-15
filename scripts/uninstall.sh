@@ -32,6 +32,17 @@ uninstall_key="$(get_tmux_option "@sidetabs-uninstall-key" "")"
 search_key="$(get_tmux_option "@sidetabs-search-key" "$DEFAULT_SEARCH_KEY")"
 [ -n "$search_key" ] && tmux unbind-key "$search_key" 2>/dev/null || true
 
+# Unbind the flag/timer keys (root table). "none" = binding was skipped.
+flag_key="$(get_tmux_option "@sidetabs-flag-key" "$DEFAULT_FLAG_KEY")"
+case "$flag_key" in none) flag_key="" ;; esac
+[ -n "$flag_key" ] && tmux unbind-key -n "$flag_key" 2>/dev/null || true
+timer_key="$(get_tmux_option "@sidetabs-timer-key" "$DEFAULT_TIMER_KEY")"
+case "$timer_key" in none) timer_key="" ;; esac
+[ -n "$timer_key" ] && tmux unbind-key -n "$timer_key" 2>/dev/null || true
+timer_menu_key="$(get_tmux_option "@sidetabs-timer-menu-key" "$DEFAULT_TIMER_MENU_KEY")"
+case "$timer_menu_key" in none) timer_menu_key="" ;; esac
+[ -n "$timer_menu_key" ] && tmux unbind-key -n "$timer_menu_key" 2>/dev/null || true
+
 # Unbind the navigation + window-management overrides (C-h is left to the user's).
 for k in 'C-j' 'C-k' 'C-n' 'C-r' 'C-x' 'M-j' 'M-k'; do
     tmux unbind-key -n "$k" 2>/dev/null || true

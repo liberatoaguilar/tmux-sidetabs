@@ -66,6 +66,9 @@ run-shell '/path/to/tmux-sidetabs/sidetabs.tmux'
 | `M-k` / `M-j` (in sidebar) | Move the current window up / down (reorder) |
 | Left-click a window row (while in the sidebar) | Switch to that window; focus stays in the sidebar so you can keep clicking (needs `@sidetabs-mouse on`; no global tmux mouse) |
 | `prefix + /` | Fuzzy-search this session's windows in a popup and jump to one |
+| `C-c` (in sidebar) | Cycle the current window's flag color (yellow → green → blue → purple → none) |
+| `C-t` (in sidebar) | Start / pause the current window's stopwatch (each pause logs one interval to the timer log) |
+| `M-t` (in sidebar) | Open the timer menu to reset or cancel the current interval |
 
 `C-j` / `C-k` outside the sidebar keep their normal `select-pane -D/-U` behavior
 (and forward to vim when a vim-like process has focus). The window-management
@@ -97,6 +100,12 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-header-fg` | `#2e3440` | Session-name header text (nord0) |
 | `@sidetabs-summary-fg` | `#81a1c1` | Summary text color (nord9) |
 | `@sidetabs-rule-fg` | `#616e88` | Divider rule color |
+| `@sidetabs-flag-colors` | `#ebcb8b #a3be8c #81a1c1 #b48ead` | Space-separated hex colors cycled by `C-c` (nord yellow/green/blue/purple; no red — bell owns red) |
+| `@sidetabs-flag-fg` | `#2e3440` | Flag pill text color (nord0) |
+| `@sidetabs-flag-key` | `C-c` | Key to cycle the current window's flag color (set to `none` to disable — applies to all three key options) |
+| `@sidetabs-timer-key` | `C-t` | Key to start / pause the current window's timer |
+| `@sidetabs-timer-menu-key` | `M-t` | Key to open the timer menu (reset / cancel current interval) |
+| `@sidetabs-timer-log` | `~/.local/share/tmux-sidetabs/timelog.tsv` | Path to the timer log file (TSV columns: end ISO, start ISO, duration seconds, cwd, session name, window name) |
 
 Example:
 
@@ -132,6 +141,15 @@ original `C-h` / `C-j` / `C-k` bindings.)
   register only while the sidebar is focused — the workflow is `C-h` into the
   sidebar, then click a row to jump to that window. Takes effect on the next config
   reload (or when the sidebar panes are recreated).
+- Bell notifications (red row) always outrank flag colors — a window with a pending
+  bell displays in red regardless of its flag.
+- Flag colors and timer state are session-only (not saved by tmux-resurrect). The
+  timer log TSV file is the durable record; the per-window state is discarded when
+  the session ends.
+- Killing a window with a running timer silently drops the unlogged in-flight interval —
+  if timing a long task, pause first to ensure it's logged.
+- Timers use wall-clock time: laptop sleep counts toward elapsed time. The timer
+  continues even when the sidebar is collapsed.
 
 ## Tests
 

@@ -55,6 +55,40 @@ bind_keys() {
         fi
     fi
 
+    # Sidebar-focused flag + timer keys (root table, act only when the focused
+    # pane is a sidetab; otherwise pass the key through). Bound here, not in
+    # keys.conf, so they work regardless of @sidetabs-skip-nav and stay
+    # configurable. Set an option to "none" to skip its binding (an empty
+    # string can't disable: show-option can't distinguish it from unset, so
+    # the default would substitute).
+    local flag_key timer_key timer_menu_key
+    flag_key="$(get_tmux_option "@sidetabs-flag-key" "$DEFAULT_FLAG_KEY")"
+    case "$flag_key" in none) flag_key="" ;; esac
+    if [ -n "$flag_key" ]; then
+        tmux bind-key -n "$flag_key" \
+            "if-shell -F '#{==:#{@is_sidetab},1}' \
+                'run-shell -b \"$SCRIPTS_DIR/flag_cycle.sh #{window_id}\"' \
+                'send-keys $flag_key'"
+    fi
+
+    timer_key="$(get_tmux_option "@sidetabs-timer-key" "$DEFAULT_TIMER_KEY")"
+    case "$timer_key" in none) timer_key="" ;; esac
+    if [ -n "$timer_key" ]; then
+        tmux bind-key -n "$timer_key" \
+            "if-shell -F '#{==:#{@is_sidetab},1}' \
+                'run-shell -b \"$SCRIPTS_DIR/timer.sh toggle #{window_id}\"' \
+                'send-keys $timer_key'"
+    fi
+
+    timer_menu_key="$(get_tmux_option "@sidetabs-timer-menu-key" "$DEFAULT_TIMER_MENU_KEY")"
+    case "$timer_menu_key" in none) timer_menu_key="" ;; esac
+    if [ -n "$timer_menu_key" ]; then
+        tmux bind-key -n "$timer_menu_key" \
+            "if-shell -F '#{==:#{@is_sidetab},1}' \
+                'run-shell -b \"$SCRIPTS_DIR/timer.sh menu #{window_id} #{client_name}\"' \
+                'send-keys $timer_menu_key'"
+    fi
+
     local skip_nav
     skip_nav="$(get_tmux_option "@sidetabs-skip-nav" "$DEFAULT_SKIP_NAV")"
     if [ "$skip_nav" = "on" ]; then
