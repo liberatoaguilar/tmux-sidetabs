@@ -42,3 +42,18 @@ REFRESH_DEBOUNCE_MS="100"
 SYNC_GUARD_OPTION="@sidetabs_sync_until"  # epoch ms until which echo-sync is suppressed
 SYNC_GUARD_WIN_OPTION="@sidetabs_sync_win" # window that owns the guard (stays live)
 SYNC_GUARD_MS="250"
+
+# Per-window user options (flag/timer state; interpolated in list-windows -F,
+# so render reads them with zero extra tmux calls). Session-only: tmux-resurrect
+# does not save user options; the timer's durable record is the TSV log.
+FLAG_OPTION="@sidetabs_flag"                # 1-based index into @sidetabs-flag-colors; unset = none
+TIMER_STATE_OPTION="@sidetabs_timer_state"  # "run" | "pause" | unset
+TIMER_START_OPTION="@sidetabs_timer_start"  # epoch seconds when the running interval started
+TIMER_ACC_OPTION="@sidetabs_timer_acc"      # accumulated seconds from completed intervals
+
+# Flag/timer defaults (overridable via user options)
+DEFAULT_FLAG_COLORS="#ebcb8b #a3be8c #81a1c1 #b48ead"  # nord yellow/green/blue/purple — no red (bell owns red)
+DEFAULT_FLAG_KEY="C-c"
+DEFAULT_TIMER_KEY="C-t"
+DEFAULT_TIMER_MENU_KEY="M-t"
+DEFAULT_TIMER_LOG="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/timelog.tsv"

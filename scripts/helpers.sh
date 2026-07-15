@@ -32,6 +32,28 @@ set_pane_option() {
     tmux set-option -p -t "$1" -q "$2" "$3"
 }
 
+get_window_option() {
+    local window_id="$1" option="$2" default_value="$3" value
+    value="$(tmux show-option -w -t "$window_id" -qv "$option" 2>/dev/null)"
+    [ -z "$value" ] && echo "$default_value" || echo "$value"
+}
+
+set_window_option() {
+    tmux set-option -w -t "$1" -q "$2" "$3"
+}
+
+unset_window_option() {
+    tmux set-option -w -t "$1" -qu "$2"
+}
+
+# epoch seconds -> ISO-8601 with UTC offset. GNU form FIRST: GNU `date -r N`
+# treats N as a filename (silent wrong answers), while the GNU -d form fails
+# cleanly on BSD/macOS and falls through to -r.
+epoch_to_iso() {
+    date -d "@$1" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null \
+        || date -r "$1" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null
+}
+
 # Returns the pane_id of the sidetab pane in a window, or empty.
 find_sidetab_pane() {
     local window_id="$1"
