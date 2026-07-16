@@ -67,8 +67,8 @@ run-shell '/path/to/tmux-sidetabs/sidetabs.tmux'
 | Left-click a window row (while in the sidebar) | Switch to that window; focus stays in the sidebar so you can keep clicking (needs `@sidetabs-mouse on`; no global tmux mouse) |
 | `prefix + /` | Fuzzy-search this session's windows in a popup and jump to one |
 | `C-c` (in sidebar) | Cycle the current window's flag color (yellow → green → blue → purple → none) |
-| `C-t` (in sidebar) | Start / pause the current window's stopwatch (each pause logs one interval to the timer log) |
-| `M-t` (in sidebar) | Open the timer menu to reset or cancel the current interval |
+| `C-t` (in sidebar) | Start / pause / resume the current window's stopwatch; counting pauses when the window loses focus (hourglass glyph ⏳ = auto-held, counting resumes on focus) |
+| `M-t` (in sidebar) | Open the timer menu: adjust total time, cancel current interval, or reset the timer |
 
 `C-j` / `C-k` outside the sidebar keep their normal `select-pane -D/-U` behavior
 (and forward to vim when a vim-like process has focus). The window-management
@@ -104,8 +104,9 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-flag-fg` | `#2e3440` | Flag pill text color (nord0) |
 | `@sidetabs-flag-key` | `C-c` | Key to cycle the current window's flag color (set to `none` to disable — applies to all three key options) |
 | `@sidetabs-timer-key` | `C-t` | Key to start / pause the current window's timer |
-| `@sidetabs-timer-menu-key` | `M-t` | Key to open the timer menu (reset / cancel current interval) |
-| `@sidetabs-timer-log` | `~/.local/share/tmux-sidetabs/timelog.tsv` | Path to the timer log file (TSV columns: end ISO, start ISO, duration seconds, cwd, session name, window name) |
+| `@sidetabs-timer-menu-key` | `M-t` | Key to open the timer menu (adjust total, cancel current interval, or reset) |
+| `@sidetabs-timer-autofocus` | `on` | `off` to disable auto pause/resume when window loses/gains focus |
+| `@sidetabs-timer-log` | `~/.local/share/tmux-sidetabs/timelog.tsv` | Path to the timer event log (TSV: timestamp, event type, interval start, interval duration, total, session, window, window_id, cwd; events are `start` / `resume` / `pause` / `auto-pause` / `auto-resume` / `adjust` / `cancel` / `reset`) |
 
 Example:
 
@@ -143,6 +144,15 @@ original `C-h` / `C-j` / `C-k` bindings.)
   reload (or when the sidebar panes are recreated).
 - Bell notifications (red row) always outrank flag colors — a window with a pending
   bell displays in red regardless of its flag.
+- **Timer behavior**: When a timer is running in a focused window, it counts only while
+  that window is active (selected). Switching to another window auto-pauses the timer
+  (shown with the hourglass glyph ⏳); returning to that window auto-resumes it (disable
+  with `@sidetabs-timer-autofocus off`). Manually pausing with `C-t` is sticky — the
+  timer will not auto-resume on focus; press `C-t` again to manually resume. Detaching
+  from tmux (closing your terminal) does **not** auto-pause the timer — use the adjust
+  menu (`M-t` → "adjust total…") to correct a forgotten timer. Adjust accepts: `+15m`,
+  `-90`, `1:30:00` (hours:minutes:seconds), `10:00` (minutes:seconds), or a bare number
+  for seconds; the total is clamped at 0.
 - Flag colors and timer state are session-only (not saved by tmux-resurrect). The
   timer log TSV file is the durable record; the per-window state is discarded when
   the session ends.
