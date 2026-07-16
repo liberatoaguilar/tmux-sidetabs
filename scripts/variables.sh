@@ -56,4 +56,5 @@ DEFAULT_FLAG_COLORS="#ebcb8b #a3be8c #81a1c1 #b48ead"  # nord yellow/green/blue/
 DEFAULT_FLAG_KEY="C-c"
 DEFAULT_TIMER_KEY="C-t"
 DEFAULT_TIMER_MENU_KEY="M-t"
+DEFAULT_TIMER_AUTOFOCUS="on"   # auto pause/resume timers on tab focus
 DEFAULT_TIMER_LOG="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/timelog.tsv"

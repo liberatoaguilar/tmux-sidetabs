@@ -70,6 +70,7 @@ GIT_ICON="$(printf '\xee\x82\xa0')"  # U+E0A0 powerline branch
 DIR_ICON="$(printf '\xef\x81\xbb')"  # U+F07B folder
 TIMER_RUN_ICON="$(printf '\xef\x81\x8b')"    # U+F04B nerd-font play
 TIMER_PAUSE_ICON="$(printf '\xef\x81\x8c')"  # U+F04C nerd-font pause
+TIMER_HOLD_ICON="$(printf '\xef\x89\x92')"   # U+F252 nerd-font hourglass-half (auto-held)
 TAB="$(printf '\t')"
 BOLD="${ESC}[1m"; NOBOLD="${ESC}[22m"; RESET="${ESC}[0m"
 hex_rgb() { local h="${1#\#}"; printf '%d;%d;%d' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}"; }
@@ -336,13 +337,18 @@ build_lines() {
         icon=""; [ "$icons_on" = "on" ] && { get_icon "$wid"; icon="$ICON"; }
         LINES+=("$(emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "$flags" "$name" "$width" 0 "$icon")")
         ROW_WIN[$(( ${#LINES[@]} - 1 ))]="$wid"       # index of the row just added
-        if [ "$tstate" = "run" ] || [ "$tstate" = "pause" ]; then
+        if [ "$tstate" = "run" ] || [ "$tstate" = "pause" ] || [ "$tstate" = "hold" ]; then
             case "$tacc" in ''|*[!0-9]*) tacc=0 ;; esac
-            telapsed="$tacc"; tic="$TIMER_PAUSE_ICON"
+            telapsed="$tacc"
+            case "$tstate" in
+                run)  tic="$TIMER_RUN_ICON" ;;
+                hold) tic="$TIMER_HOLD_ICON" ;;
+                *)    tic="$TIMER_PAUSE_ICON" ;;
+            esac
             if [ "$tstate" = "run" ]; then
                 case "$tstart" in ''|*[!0-9]*) tstart="$now_s" ;; esac
                 tlive=$((now_s - tstart)); [ "$tlive" -lt 0 ] && tlive=0   # clock skew clamp
-                telapsed=$((tacc + tlive)); tic="$TIMER_RUN_ICON"
+                telapsed=$((tacc + tlive))
             fi
             LINES+=("$(emit_summary_icon "$tic" "$(fmt_hms "$telapsed")" "$width" head)")
         fi

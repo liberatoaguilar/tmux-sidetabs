@@ -10,7 +10,8 @@ source "$CURRENT_DIR/helpers.sh"
 # window-layout-changed and the resurrection hook recreates it.
 for hook in after-new-window after-new-session window-renamed \
             session-window-changed window-linked window-unlinked \
-            pane-focus-in alert-activity window-layout-changed window-resized; do
+            pane-focus-in alert-activity window-layout-changed window-resized \
+            client-session-changed client-attached client-detached; do
     tmux set-hook -gu "$hook" 2>/dev/null || true
 done
 

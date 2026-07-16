@@ -13,8 +13,14 @@ register_hooks() {
         "run-shell -b '$SCRIPTS_DIR/create_sidebar.sh #{window_id}'"
     tmux set-hook -g window-renamed \
         "run-shell -b '$SCRIPTS_DIR/refresh.sh #{session_id}'"
-    tmux set-hook -g session-window-changed \
+    tmux set-hook -g 'session-window-changed[0]' \
         "run-shell -b '$SCRIPTS_DIR/refresh.sh #{session_id}'"
+    tmux set-hook -g 'session-window-changed[1]' \
+        "run-shell -b '$SCRIPTS_DIR/timer_focus.sh'"
+    # Focus engine also needs client transitions (attach/detach/session switch).
+    tmux set-hook -g 'client-session-changed[0]' "run-shell -b '$SCRIPTS_DIR/timer_focus.sh'"
+    tmux set-hook -g 'client-attached[0]'        "run-shell -b '$SCRIPTS_DIR/timer_focus.sh'"
+    tmux set-hook -g 'client-detached[0]'        "run-shell -b '$SCRIPTS_DIR/timer_focus.sh'"
     tmux set-hook -g window-linked \
         "run-shell -b '$SCRIPTS_DIR/refresh.sh #{session_id}'"
     tmux set-hook -g window-unlinked \
