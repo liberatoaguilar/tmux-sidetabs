@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 # Long-lived render loop. Runs inside the sidetab pane.
 #
-# Redraws every second (and immediately on SIGUSR1 from refresh.sh). The draw
-# is flicker-free: it homes the cursor and overwrites each line with a
+# Visibility-gated: only a sidebar someone can SEE (a client is viewing its
+# window — or, with zero clients on the whole server, its window is the active
+# one, mirroring timer_focus.sh's detached-server rule) rebuilds on the fast
+# 0.5s tick. Hidden sidebars block on a long sleep and rebuild only when
+# refresh.sh signals USR1 (window switches, renames, bells, attach, …), so an
+# idle server does no per-hidden-pane work. All rendered state is recomputed
+# from tmux options at build time, so a sidebar waking after minutes is
+# instantly correct (timers included).
+#
+# The draw is flicker-free: it homes the cursor and overwrites each line with a
 # clear-to-EOL, then clears below — no full-screen wipe. Reprinting identical
 # content is therefore invisible, which also lets us recover transparently when
 # tmux repaints the pane (e.g. right after the pane is created or resized).
@@ -27,8 +35,29 @@ MY_PANE_ID="$TMUX_PANE"
 SESSION_ID="$(tmux display-message -p -t "$MY_PANE_ID" '#{session_id}' 2>/dev/null)"
 [ -z "$SESSION_ID" ] && SESSION_ID="$1"
 
-# No-op handler: its only job is to interrupt `read`/`wait` so the loop redraws now.
-trap ':' USR1
+# Fully-qualified target for format reads. A bare pane target lets tmux pick
+# the session context by best-match, which for a window linked into grouped
+# sessions can be a DIFFERENT session than SESSION_ID — session-scoped options
+# (@sidetabs_collapsed, summary cache) and #{window_active} would then come
+# from the wrong session. Qualifying with session:window.pane pins the context
+# to the same session everything else in this script uses.
+MY_WINDOW_ID="$(tmux display-message -p -t "$MY_PANE_ID" '#{window_id}' 2>/dev/null)"
+if [ -n "$MY_WINDOW_ID" ]; then
+    MY_TARGET="${SESSION_ID}:${MY_WINDOW_ID}.${MY_PANE_ID}"
+else
+    MY_TARGET="$MY_PANE_ID"
+fi
+
+# USR1 = "state changed, redraw now". The trap marks the wake AND kills the
+# in-flight sleep so a signal landing between the visibility check and `wait`
+# can't be swallowed by the no-op-trap race (`wait` would block the full
+# interval with the signal already consumed). Known microscopic hazard: between
+# `wait` reaping the child and SLEEP_PID being cleared, the trap could kill a
+# reused PID — accepted; bash 3.2 offers no atomic alternative (no sub-second
+# read -t for a self-pipe), and the window is a single statement wide.
+WOKEN=0
+SLEEP_PID=""
+trap 'WOKEN=1; [ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null' USR1
 
 set_pane_option "$MY_PANE_ID" "$RENDER_PID_OPTION" "$$"
 
@@ -58,6 +87,7 @@ cleanup() {
     [ "$MOUSE_ON" = "on" ] && printf '\033[?1000l\033[?1006l'
     [ -n "$SAVED_STTY" ] && stty "$SAVED_STTY" 2>/dev/null
     [ -n "$MOUSE_READER_PID" ] && kill "$MOUSE_READER_PID" 2>/dev/null
+    [ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null
 }
 trap 'cleanup; exit 0' EXIT INT TERM
 
@@ -72,6 +102,7 @@ TIMER_RUN_ICON="$(printf '\xef\x81\x8b')"    # U+F04B nerd-font play
 TIMER_PAUSE_ICON="$(printf '\xef\x81\x8c')"  # U+F04C nerd-font pause
 TIMER_HOLD_ICON="$(printf '\xef\x89\x92')"   # U+F252 nerd-font hourglass-half (auto-held)
 TAB="$(printf '\t')"
+US=$'\x1f'   # field separator for multi-value option reads (never in content)
 BOLD="${ESC}[1m"; NOBOLD="${ESC}[22m"; RESET="${ESC}[0m"
 hex_rgb() { local h="${1#\#}"; printf '%d;%d;%d' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}"; }
 
@@ -113,7 +144,11 @@ for _c in $flag_colors; do
     CAP_FLAG[$FLAG_N]="$(cap_sgr "$_c")"
 done
 
-# A full-width header pill (bold) for the session name.
+# The emit_* helpers set the global ROW instead of printing: build_lines runs
+# them ~2N times per tick, and a $(...) capture is a fork each — printf -v
+# keeps the whole row construction fork-free (bash 3.1+).
+
+# A full-width header pill (bold) for the session name. Sets ROW.
 emit_header() {
     local label="$1" width="$2" avail used pad spaces
     avail=$((width - 1)); [ "$avail" -lt 0 ] && avail=0
@@ -121,11 +156,12 @@ emit_header() {
     used=${#label}
     if [ "$used" -gt "$avail" ]; then label="${label:0:avail}"; used="$avail"; fi
     pad=$((avail - used)); [ "$pad" -lt 0 ] && pad=0
-    spaces="$(printf '%*s' "$pad" '')"
-    printf '%s%s%s%s%s%s%s%s\n' "$SEG_HDR" "$BOLD" "$label" "$NOBOLD" "$spaces" "$CAP_HDR" "$ARROW" "$RESET"
+    printf -v spaces '%*s' "$pad" ''
+    printf -v ROW '%s%s%s%s%s%s%s%s' "$SEG_HDR" "$BOLD" "$label" "$NOBOLD" "$spaces" "$CAP_HDR" "$ARROW" "$RESET"
 }
 
 # emit_row <active> <bell> <activity> <flagidx> <idx> <flags> <name> <width> <collapsed> [icon]
+# Sets ROW.
 emit_row() {
     local active="$1" bell="$2" activity="$3" flagidx="$4" idx="$5" flags="$6" name="$7" width="$8" collapsed="$9" icon="${10:-}"
     local seg cap avail nm used pad spaces icon_seg icon_w
@@ -152,8 +188,8 @@ emit_row() {
         fi
         used=$((1 + ${#idx} + icon_w))
         pad=$((avail - used)); [ "$pad" -lt 0 ] && pad=0
-        spaces="$(printf '%*s' "$pad" '')"
-        printf '%s %s%s%s%s%s%s%s%s\n' \
+        printf -v spaces '%*s' "$pad" ''
+        printf -v ROW '%s %s%s%s%s%s%s%s%s' \
             "$seg" "$BOLD" "$idx" "$NOBOLD" "$icon_seg" "$spaces" "$cap" "$ARROW" "$RESET"
         return
     fi
@@ -175,23 +211,23 @@ emit_row() {
         used=$((1 + ${#idx} + 1 + 1 + icon_w + ${#nm}))
     fi
     pad=$((avail - used)); [ "$pad" -lt 0 ] && pad=0
-    spaces="$(printf '%*s' "$pad" '')"
+    printf -v spaces '%*s' "$pad" ''
 
-    printf '%s %s%s%s %s%s%s%s%s%s%s\n' \
+    printf -v ROW '%s %s%s%s %s%s%s%s%s%s%s' \
         "$seg" "$BOLD" "$idx" "$NOBOLD" "$THIN" "$icon_seg" "$nm" "$spaces" "$cap" "$ARROW" "$RESET"
 }
 
-# seconds -> HH:MM:SS (pure bash arithmetic; hours may exceed 99).
+# seconds -> HH:MM:SS (pure bash arithmetic; hours may exceed 99). Sets HMS.
 fmt_hms() {
     local s="$1" h m
     case "$s" in ''|*[!0-9]*) s=0 ;; esac
     h=$((s / 3600)); m=$((s % 3600 / 60)); s=$((s % 60))
-    printf '%02d:%02d:%02d' "$h" "$m" "$s"
+    printf -v HMS '%02d:%02d:%02d' "$h" "$m" "$s"
 }
 
 # One dim summary line: " <icon> <text>", truncated to width with the icon kept.
 # mode=head keeps the start of the text (branch + commit start); mode=tail keeps
-# the end (so a single dir keeps its basename, e.g. …/tmux-sidetabs).
+# the end (so a single dir keeps its basename, e.g. …/tmux-sidetabs). Sets ROW.
 emit_summary_icon() {
     local icon="$1" text="$2" width="$3" mode="$4" avail maxtext keep
     avail=$((width - 1)); [ "$avail" -lt 0 ] && avail=0
@@ -205,38 +241,40 @@ emit_summary_icon() {
             text="${text:0:keep}…"
         fi
     fi
-    printf '%s %s %s%s\n' "$SUMMARY_SGR" "$icon" "$text" "$RESET"
+    printf -v ROW '%s %s %s%s' "$SUMMARY_SGR" "$icon" "$text" "$RESET"
 }
 
 # Summary under the active window: git (branch + last commit) and working dir(s)
-# of the window's content panes. Cached per-session for SUMMARY_TTL_MS so the
-# 1s redraw across all sidetabs doesn't re-spawn git.
+# of the window's content panes. Cached per-session for SUMMARY_TTL_MS so
+# redraws across a session's sidetabs don't re-spawn git; the cache values ride
+# read_state's single per-iteration tmux call (CACHE_* globals). Values are
+# stripped of control chars at write time so the US-joined read can never
+# mis-split. Appends to LINES.
 emit_summary() {
-    local wid="$1" width="$2"
-    local gitraw dirsraw now cw at
+    local wid="$1" width="$2" now_s="$3"
+    local gitraw="$CACHE_GIT" dirsraw="$CACHE_DIRS" now at
 
-    now="$(now_ms)"
-    cw="$(get_session_option "$SESSION_ID" "$SUMMARY_CACHE_WIN" "")"
-    at="$(get_session_option "$SESSION_ID" "$SUMMARY_CACHE_AT" "0")"
+    now=$((now_s * 1000))
+    at="$CACHE_AT"
+    case "$at" in ''|*[!0-9]*) at=0 ;; esac
 
-    if [ "$cw" = "$wid" ] && [ "$((now - at))" -lt "$SUMMARY_TTL_MS" ]; then
-        gitraw="$(get_session_option "$SESSION_ID" "$SUMMARY_CACHE_GIT" "")"
-        dirsraw="$(get_session_option "$SESSION_ID" "$SUMMARY_CACHE_DIRS" "")"
-    else
+    if [ "$CACHE_WIN" != "$wid" ] || [ "$((now - at))" -ge "$SUMMARY_TTL_MS" ]; then
         local paths p br sub
+        gitraw=""; dirsraw=""
         # Content-pane cwds, active pane first. Use the first that's a git repo
         # for the branch line (the active pane may not be the repo one).
         paths="$(tmux list-panes -t "$wid" \
             -F "#{pane_active}${TAB}#{@is_sidetab}${TAB}#{pane_current_path}" \
             2>/dev/null | awk -F"$TAB" '$2 != "1"' | sort -r | cut -d"$TAB" -f3)"
 
-        gitraw=""
         while IFS= read -r p; do
             [ -z "$p" ] && continue
             br="$(git -C "$p" symbolic-ref --short -q HEAD 2>/dev/null \
                   || git -C "$p" rev-parse --short HEAD 2>/dev/null)"
             if [ -n "$br" ]; then
-                sub="$(git -C "$p" log -1 --format=%s 2>/dev/null)"
+                # Subjects may legally contain control chars (even 0x1f, our
+                # separator) — strip them before they enter the cache.
+                sub="$(git -C "$p" log -1 --format=%s 2>/dev/null | tr -d '\000-\037')"
                 gitraw="$br $sub"
                 break
             fi
@@ -249,7 +287,7 @@ emit_summary() {
                 $1 != "1" {
                     p=$2; if (index(p,home)==1) p="~" substr(p,length(home)+1)
                     if (!(p in seen)) { seen[p]=1; out=(out=="" ? p : out " | " p) }
-                } END { print out }')"
+                } END { print out }' | tr -d '\000-\037')"
 
         set_session_option "$SESSION_ID" "$SUMMARY_CACHE_WIN" "$wid"
         set_session_option "$SESSION_ID" "$SUMMARY_CACHE_AT" "$now"
@@ -257,8 +295,8 @@ emit_summary() {
         set_session_option "$SESSION_ID" "$SUMMARY_CACHE_DIRS" "$dirsraw"
     fi
 
-    [ -n "$gitraw" ]  && emit_summary_icon "$GIT_ICON" "$gitraw" "$width" head
-    [ -n "$dirsraw" ] && emit_summary_icon "$DIR_ICON" "$dirsraw" "$width" tail
+    [ -n "$gitraw" ]  && { emit_summary_icon "$GIT_ICON" "$gitraw" "$width" head; LINES+=("$ROW"); }
+    [ -n "$dirsraw" ] && { emit_summary_icon "$DIR_ICON" "$dirsraw" "$width" tail; LINES+=("$ROW"); }
 }
 
 # Sets the global ICON to the glyph for window $1, using CMD_MAP (built in
@@ -280,6 +318,50 @@ write_rowmap() {
     set_pane_option "$MY_PANE_ID" "$ROWMAP_OPTION" "$m"
 }
 
+# One tmux round-trip per loop iteration: visibility + everything build_lines
+# and emit_summary need that isn't per-window. Sets VIS_CLIENTS, WIN_ACTIVE,
+# COLLAPSED, WIDTH, CACHE_WIN, CACHE_AT, CACHE_GIT, CACHE_DIRS, SNAME.
+# US-separated: the numeric fields can't contain 0x1f and the cache values are
+# control-char-sanitized at write time (emit_summary). window_active_clients
+# gets a 'c' prefix so an empty expansion (tmux < 3.1 doesn't know the format)
+# can't shift fields; SNAME is last so read's remainder-merge absorbs any
+# separator that still sneaks through.
+read_state() {
+    local state
+    state="$(tmux display-message -p -t "$MY_TARGET" \
+        "c#{window_active_clients}${US}#{window_active}${US}#{?${COLLAPSED_OPTION},#{${COLLAPSED_OPTION}},0}${US}#{pane_width}${US}#{${SUMMARY_CACHE_WIN}}${US}#{${SUMMARY_CACHE_AT}}${US}#{${SUMMARY_CACHE_GIT}}${US}#{${SUMMARY_CACHE_DIRS}}${US}#{session_name}" 2>/dev/null)"
+    IFS="$US" read -r VIS_CLIENTS WIN_ACTIVE COLLAPSED WIDTH CACHE_WIN CACHE_AT CACHE_GIT CACHE_DIRS SNAME <<< "$state"
+    VIS_CLIENTS="${VIS_CLIENTS#c}"
+    [ -z "$WIDTH" ] && WIDTH=4
+}
+
+# Visible = a client is viewing this window; with zero clients on the server,
+# the session's active window counts (detached/test servers — same rule as
+# timer_focus.sh, via the shared server_client_count helper). Empty
+# VIS_CLIENTS = old tmux without the format: fail open to the always-ticking
+# behavior.
+is_visible() {
+    case "$VIS_CLIENTS" in
+        '') return 0 ;;
+        0)  : ;;
+        *)  return 0 ;;
+    esac
+    [ "$WIN_ACTIVE" = "1" ] || return 1
+    [ "$(server_client_count)" = "0" ]
+}
+
+# Sleep $1 seconds, waking early on USR1. The trap kills the sleep child, so a
+# signal that lands anywhere after WOKEN was cleared — including between the
+# WOKEN check below and `wait` — still interrupts. The post-spawn WOKEN check
+# covers a signal that fired before the child existed for the trap to kill.
+interruptible_sleep() {
+    sleep "$1" &
+    SLEEP_PID=$!
+    [ "$WOKEN" = "1" ] && kill "$SLEEP_PID" 2>/dev/null
+    wait "$SLEEP_PID" 2>/dev/null
+    SLEEP_PID=""
+}
+
 # Build the visual lines (LINES[]) and a line-index -> window_id map (ROW_WIN[])
 # for click-to-select. Uses process substitution (done < <(...)) so the arrays
 # accumulate in THIS shell — a piped `while` would lose them to a subshell. A
@@ -287,16 +369,18 @@ write_rowmap() {
 # map correct across the header, the per-window rules, each window's timer line, and
 # the active window's 0-2 summary lines (all appended as plain lines, with no
 # ROW_WIN entry, so clicks on them stay no-ops).
+# Reads COLLAPSED/WIDTH/SNAME from read_state (already fetched this iteration).
 build_lines() {
     LINES=(); ROW_WIN=()
-    local collapsed width rule i sname fmt flags summ sline icon now_s telapsed tlive tic
-    collapsed="$(get_session_option "$SESSION_ID" "$COLLAPSED_OPTION" "0")"
-    width="$(tmux display-message -p -t "$MY_PANE_ID" '#{pane_width}' 2>/dev/null)"
-    [ -z "$width" ] && width=4
+    local collapsed="$COLLAPSED" width="$WIDTH" i fmt flags icon now_s telapsed tlive tic
 
-    rule=""; i=0
-    while [ "$i" -lt "$width" ]; do rule="${rule}${RULE}"; i=$((i + 1)); done
-    rule="${RULE_SGR}${rule}${RESET}"
+    # Rule line: rebuilt only when the pane width changes.
+    if [ "$width" != "$RULE_WIDTH" ]; then
+        RULE_LINE=""; i=0
+        while [ "$i" -lt "$width" ]; do RULE_LINE="${RULE_LINE}${RULE}"; i=$((i + 1)); done
+        RULE_LINE="${RULE_SGR}${RULE_LINE}${RESET}"
+        RULE_WIDTH="$width"
+    fi
 
     # window_id -> content command (active non-sidetab pane first), one query.
     CMD_MAP=""
@@ -314,15 +398,16 @@ build_lines() {
         fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{?${FLAG_OPTION},#{${FLAG_OPTION}},0}${TAB}#{window_index}${TAB}#{window_id}"
         while IFS="$TAB" read -r active bell activity flagidx idx wid; do
             icon=""; [ "$icons_on" = "on" ] && { get_icon "$wid"; icon="$ICON"; }
-            LINES+=("$(emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "" "" "$width" 1 "$icon")")
+            emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "" "" "$width" 1 "$icon"
+            LINES+=("$ROW")
             ROW_WIN[$(( ${#LINES[@]} - 1 ))]="$wid"
         done < <(tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null)
         [ "$MOUSE_ON" = "on" ] && write_rowmap
         return
     fi
 
-    sname="$(tmux display-message -p -t "$SESSION_ID" '#{session_name}' 2>/dev/null)"
-    LINES+=("$(emit_header "$sname" "$width")")   # line 0: header
+    emit_header "$SNAME" "$width"
+    LINES+=("$ROW")                       # line 0: header
     now_s="$(date +%s)"
 
     # All fields are non-empty booleans/numbers/ids (no #{window_flags}, which can
@@ -333,9 +418,10 @@ build_lines() {
         [ "$active" = "1" ] && flags="*"
         [ "$last" = "1" ] && flags="${flags}-"
         [ "$zoomed" = "1" ] && flags="${flags}Z"
-        LINES+=("$rule")                              # rule line
+        LINES+=("$RULE_LINE")                         # rule line
         icon=""; [ "$icons_on" = "on" ] && { get_icon "$wid"; icon="$ICON"; }
-        LINES+=("$(emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "$flags" "$name" "$width" 0 "$icon")")
+        emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "$flags" "$name" "$width" 0 "$icon"
+        LINES+=("$ROW")
         ROW_WIN[$(( ${#LINES[@]} - 1 ))]="$wid"       # index of the row just added
         if [ "$tstate" = "run" ] || [ "$tstate" = "pause" ] || [ "$tstate" = "hold" ]; then
             case "$tacc" in ''|*[!0-9]*) tacc=0 ;; esac
@@ -350,13 +436,16 @@ build_lines() {
                 tlive=$((now_s - tstart)); [ "$tlive" -lt 0 ] && tlive=0   # clock skew clamp
                 telapsed=$((tacc + tlive))
             fi
-            LINES+=("$(emit_summary_icon "$tic" "$(fmt_hms "$telapsed")" "$width" head)")
+            fmt_hms "$telapsed"
+            emit_summary_icon "$tic" "$HMS" "$width" head
+            LINES+=("$ROW")
         fi
-        if [ "$active" = "1" ] && [ "$summary_on" = "on" ]; then
-            summ="$(emit_summary "$wid" "$width")"
-            if [ -n "$summ" ]; then
-                while IFS= read -r sline; do LINES+=("$sline"); done <<< "$summ"
-            fi
+        # Summary only when someone can see it: a hidden sidebar's self-heal
+        # rebuild would otherwise re-run the git/cwd probes (the shared cache
+        # is usually past TTL by then) for lines nobody is looking at. The
+        # wake-on-visible rebuild restores them instantly.
+        if [ "$active" = "1" ] && [ "$summary_on" = "on" ] && [ "$VISIBLE" = "1" ]; then
+            emit_summary "$wid" "$width" "$now_s"
         fi
     done < <(tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null)
     [ "$MOUSE_ON" = "on" ] && write_rowmap
@@ -402,8 +491,8 @@ mouse_reader() {
 }
 
 # In mouse mode a background reader consumes clicks; the main loop just redraws on
-# a 0.5s timer, woken early by refresh.sh's USR1 (which interrupts `wait`) for
-# instant updates on window switches, bells, renames, etc.
+# a timer, woken early by refresh.sh's USR1 for instant updates on window
+# switches, bells, renames, etc.
 if [ "$MOUSE_ON" = "on" ]; then
     # < /dev/tty because bash redirects a backgrounded job's stdin to /dev/null
     # (job control off); without this the reader hits EOF and exits immediately.
@@ -411,9 +500,26 @@ if [ "$MOUSE_ON" = "on" ]; then
     MOUSE_READER_PID="$!"
 fi
 
+RULE_WIDTH=""; RULE_LINE=""
+
+# Main loop. Every iteration rebuilds and redraws; only the sleep differs:
+# visible sidebars tick fast (live timers, activity), hidden ones sleep
+# HIDDEN_TICK_SECS and are woken early by refresh.sh's USR1. Rebuilding
+# unconditionally means a USR1 can never be LOST — one landing anywhere in the
+# iteration either kills the in-flight sleep (trap) or leaves WOKEN=1 so
+# interruptible_sleep returns immediately; worst case is one redundant rebuild.
+# It also makes the hidden tick a true staleness bound after a swallowed
+# debounced signal, and guarantees a freshly spawned sidebar draws (and writes
+# its mouse rowmap) before its first sleep.
 while true; do
+    WOKEN=0
+    read_state
+    VISIBLE=0; is_visible && VISIBLE=1
     build_lines
     draw_lines
-    sleep 0.5 &
-    wait $! 2>/dev/null
+    if [ "$VISIBLE" = "1" ]; then
+        interruptible_sleep 0.5
+    else
+        interruptible_sleep "$HIDDEN_TICK_SECS"
+    fi
 done

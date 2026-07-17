@@ -31,7 +31,7 @@ ARG="${3:-}"
 [ -z "$WID" ] && exit 0
 TAB="$(printf '\t')"
 
-nudge_redraw() { set_tmux_option "$LAST_REFRESH_OPTION" "0"; "$CURRENT_DIR/refresh.sh"; }
+nudge_redraw() { "$CURRENT_DIR/refresh.sh" force; }
 num_or() { case "$1" in ''|*[!0-9]*) echo "$2" ;; *) echo "$1" ;; esac; }
 
 # log_event <event> <interval_start_epoch|-> <interval_s> <total_s>

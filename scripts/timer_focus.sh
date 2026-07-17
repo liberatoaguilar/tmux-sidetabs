@@ -28,7 +28,7 @@ trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 while :; do
     rm -f "${LOCK}.rerun" 2>/dev/null || true
 
-    clients="$(tmux list-clients 2>/dev/null | grep -c . || true)"
+    clients="$(server_client_count)"
     case "$clients" in ''|*[!0-9]*) clients=0 ;; esac
 
     # One decision per window: linked windows (grouped sessions) appear once per
@@ -57,8 +57,7 @@ while :; do
     done <<< "$rows"
 
     if [ "$changed" = "1" ]; then
-        set_tmux_option "$LAST_REFRESH_OPTION" "0"
-        "$CURRENT_DIR/refresh.sh"
+        "$CURRENT_DIR/refresh.sh" force
     fi
 
     [ -e "${LOCK}.rerun" ] || break

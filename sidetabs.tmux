@@ -11,24 +11,35 @@ register_hooks() {
         "run-shell -b '$SCRIPTS_DIR/create_sidebar.sh #{window_id}'"
     tmux set-hook -g after-new-session \
         "run-shell -b '$SCRIPTS_DIR/create_sidebar.sh #{window_id}'"
+    # Visibility transitions (window switch, attach, session switch, link/
+    # unlink) use `refresh.sh force` — hidden sidebars only rebuild on the USR1
+    # this sends, so these wakes must never be lost to the debounce. Cosmetic
+    # events (rename, activity, focus churn) stay debounced; the viewed
+    # sidebar's own 0.5s tick covers a swallowed one.
     tmux set-hook -g window-renamed \
-        "run-shell -b '$SCRIPTS_DIR/refresh.sh #{session_id}'"
+        "run-shell -b '$SCRIPTS_DIR/refresh.sh'"
     tmux set-hook -g 'session-window-changed[0]' \
-        "run-shell -b '$SCRIPTS_DIR/refresh.sh #{session_id}'"
+        "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
     tmux set-hook -g 'session-window-changed[1]' \
         "run-shell -b '$SCRIPTS_DIR/timer_focus.sh'"
     # Focus engine also needs client transitions (attach/detach/session switch).
     tmux set-hook -g 'client-session-changed[0]' "run-shell -b '$SCRIPTS_DIR/timer_focus.sh'"
     tmux set-hook -g 'client-attached[0]'        "run-shell -b '$SCRIPTS_DIR/timer_focus.sh'"
     tmux set-hook -g 'client-detached[0]'        "run-shell -b '$SCRIPTS_DIR/timer_focus.sh'"
+    # Wake sleeping sidebars the moment a client can see them again. Detach is
+    # a visibility transition too: the last client leaving flips hidden
+    # active-window sidebars to visible under the zero-clients rule.
+    tmux set-hook -g 'client-session-changed[1]' "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
+    tmux set-hook -g 'client-attached[1]'        "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
+    tmux set-hook -g 'client-detached[1]'        "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
     tmux set-hook -g window-linked \
-        "run-shell -b '$SCRIPTS_DIR/refresh.sh #{session_id}'"
+        "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
     tmux set-hook -g window-unlinked \
-        "run-shell -b '$SCRIPTS_DIR/refresh.sh #{session_id}'"
+        "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
     tmux set-hook -g pane-focus-in \
-        "run-shell -b '$SCRIPTS_DIR/refresh.sh #{session_id}'"
+        "run-shell -b '$SCRIPTS_DIR/refresh.sh'"
     tmux set-hook -g alert-activity \
-        "run-shell -b '$SCRIPTS_DIR/refresh.sh #{session_id}'"
+        "run-shell -b '$SCRIPTS_DIR/refresh.sh'"
     # Recreate a sidetab if it disappears (manual kill) or if a too-narrow
     # window later widens. window-layout-changed fires for both (a resize
     # changes pane geometry too), and create_sidebar is idempotent +

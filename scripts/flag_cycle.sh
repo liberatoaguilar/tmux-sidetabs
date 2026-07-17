@@ -29,5 +29,4 @@ else
     set_window_option "$WID" "$FLAG_OPTION" "$next"
 fi
 
-set_tmux_option "$LAST_REFRESH_OPTION" "0"
-"$CURRENT_DIR/refresh.sh"
+"$CURRENT_DIR/refresh.sh" force

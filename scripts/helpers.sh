@@ -71,6 +71,16 @@ pane_is_sidetab() {
     [ "$(get_pane_option "$pane_id" "@is_sidetab" "0")" = "1" ]
 }
 
+# Number of clients attached to this server (always prints a number). The
+# SINGLE definition of "how clients are counted" for both the timer focus
+# engine (timer_focus.sh) and render.sh's visibility gate — they must agree,
+# or a window's timer could run as "focused" while its sidebar sleeps as
+# hidden. `|| true` guards callers running under set -e/pipefail (grep -c
+# exits 1 on zero matches after printing 0).
+server_client_count() {
+    tmux list-clients 2>/dev/null | grep -c . || true
+}
+
 # Current epoch ms. Runs on every refresh hook, so startup cost matters: prefer
 # perl (~0-2ms, ms precision) over python3 (~30ms cold-start, ~15x slower) to avoid
 # a process-spawn storm. date fallback is seconds-only — too coarse for the 100ms

@@ -35,6 +35,12 @@ DEFAULT_ICONS="on"
 DEFAULT_SEARCH_KEY="/"
 REFRESH_DEBOUNCE_MS="100"
 
+# Hidden-sidebar self-heal tick (seconds). Sidebars nobody is viewing block on
+# a sleep this long instead of the 0.5s redraw tick; refresh.sh's USR1 wakes
+# them instantly on real events, so this only bounds staleness after a missed
+# signal. Keep it long — every hidden pane pays one tmux call per tick.
+HIDDEN_TICK_SECS="5"
+
 # Width-sync feedback guard. Propagating a resize to the other windows fires
 # window-layout-changed -> sync_width.sh for each of them; while armed, events
 # from windows OTHER than the guard owner are ignored, so propagation can't

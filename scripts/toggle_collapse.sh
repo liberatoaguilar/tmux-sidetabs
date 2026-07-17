@@ -28,6 +28,6 @@ tmux list-windows -t "$SESSION_ID" -F '#{window_id}' 2>/dev/null \
         tmux resize-pane -t "$sidetab" -x "$new_width"
       done
 
-# Force redraw — bypass the global debounce by resetting the stamp.
-set_tmux_option "$LAST_REFRESH_OPTION" "0"
-"$CURRENT_DIR/refresh.sh"
+# Force redraw. (Not the stamp-reset hack: a concurrent forced refresh could
+# re-stamp between our reset and the debounce read and swallow this wake.)
+"$CURRENT_DIR/refresh.sh" force
