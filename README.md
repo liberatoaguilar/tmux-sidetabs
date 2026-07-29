@@ -66,7 +66,8 @@ run-shell '/path/to/tmux-sidetabs/sidetabs.tmux'
 | `M-k` / `M-j` (in sidebar) | Move the current window up / down (reorder) |
 | Left-click a window row (while in the sidebar) | Switch to that window; focus stays in the sidebar so you can keep clicking (needs `@sidetabs-mouse on`; no global tmux mouse) |
 | `prefix + /` | Fuzzy-search this session's windows in a popup and jump to one |
-| `C-c` (in sidebar) | Cycle the current window's flag color (yellow → green → blue → purple → none) |
+| `C-c` (in sidebar) | Cycle the current window's flag color one step forward (yellow → green → blue → purple → orange → teal → indigo → slate → none) |
+| `M-c` (in sidebar) | Open the flag color **picker**: a menu of live color swatches — press `1`-`8` to jump straight to a color, `0` to clear |
 | `C-t` (in sidebar) | Start / pause / resume the current window's stopwatch; counting pauses when the window loses focus (hourglass glyph ⏳ = auto-held, counting resumes on focus) |
 | `M-t` (in sidebar) | Open the timer menu: adjust total time, cancel current interval, or reset the timer |
 
@@ -100,9 +101,11 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-header-fg` | `#2e3440` | Session-name header text (nord0) |
 | `@sidetabs-summary-fg` | `#81a1c1` | Summary text color (nord9) |
 | `@sidetabs-rule-fg` | `#616e88` | Divider rule color |
-| `@sidetabs-flag-colors` | `#ebcb8b #a3be8c #81a1c1 #b48ead` | Space-separated hex colors cycled by `C-c` (nord yellow/green/blue/purple; no red — bell owns red) |
+| `@sidetabs-flag-colors` | `#ebcb8b #a3be8c #81a1c1 #b48ead #d08770 #8fbcbb #9d7cd8 #8b95a8` | Space-separated hex colors offered by `C-c` / `M-c` (yellow, green, blue, purple, orange, teal, indigo, slate). Add or remove entries freely — the picker and the cycle both size themselves to the list. No red: the bell state owns red |
+| `@sidetabs-flag-names` | `yellow green blue purple orange teal indigo slate` | Picker labels, positional against `@sidetabs-flag-colors`. A shorter list is fine — unnamed slots show their hex instead |
 | `@sidetabs-flag-fg` | `#2e3440` | Flag pill text color (nord0) |
-| `@sidetabs-flag-key` | `C-c` | Key to cycle the current window's flag color (set to `none` to disable — applies to all three key options) |
+| `@sidetabs-flag-key` | `C-c` | Key to cycle the current window's flag color (set to `none` to disable — applies to every key option) |
+| `@sidetabs-flag-picker-key` | `M-c` | Key to open the flag color picker menu (`none` to disable) |
 | `@sidetabs-timer-key` | `C-t` | Key to start / pause the current window's timer |
 | `@sidetabs-timer-menu-key` | `M-t` | Key to open the timer menu (adjust total, cancel current interval, or reset) |
 | `@sidetabs-timer-autofocus` | `on` | `off` to disable auto pause/resume when window loses/gains focus |
@@ -142,6 +145,13 @@ original `C-h` / `C-j` / `C-k` bindings.)
   register only while the sidebar is focused — the workflow is `C-h` into the
   sidebar, then click a row to jump to that window. Takes effect on the next config
   reload (or when the sidebar panes are recreated).
+- **Flag colors**: `C-c` steps forward through the palette (fast when you just want
+  *some* color); `M-c` opens a picker menu showing each color as a real swatch, with
+  the current one marked, so you can jump straight to one with a number key. Both act
+  on the same per-window state, so they're interchangeable.
+- The palette is an ordered list and the window option stores an **index** into it, so
+  reordering `@sidetabs-flag-colors` recolors existing flags. Append new colors at the
+  end to avoid that.
 - Bell notifications (red row) always outrank flag colors — a window with a pending
   bell displays in red regardless of its flag.
 - **Timer behavior**: When a timer is running in a focused window, it counts only while

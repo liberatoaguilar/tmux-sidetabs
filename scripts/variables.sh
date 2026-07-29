@@ -58,8 +58,18 @@ TIMER_START_OPTION="@sidetabs_timer_start"  # epoch seconds when the running int
 TIMER_ACC_OPTION="@sidetabs_timer_acc"      # accumulated seconds from completed intervals
 
 # Flag/timer defaults (overridable via user options)
-DEFAULT_FLAG_COLORS="#ebcb8b #a3be8c #81a1c1 #b48ead"  # nord yellow/green/blue/purple — no red (bell owns red)
+# Palette order is API: the window option stores a 1-based INDEX, so slots 1-4
+# must keep their original colors or existing flags silently recolor. New colors
+# append only. No red anywhere — the bell state owns red (#bf616a), and a flag
+# within ~15 degrees of its hue would read as "bell". Hues are spread so
+# adjacent picks stay tellable apart at pill size; slot 8 is desaturated on
+# purpose ("parked/done" reads differently from any hue).
+DEFAULT_FLAG_COLORS="#ebcb8b #a3be8c #81a1c1 #b48ead #d08770 #8fbcbb #9d7cd8 #8b95a8"
+# Positional labels for the picker, one per color. A shorter list than the color
+# list is fine — unnamed slots fall back to showing their hex.
+DEFAULT_FLAG_NAMES="yellow green blue purple orange teal indigo slate"
 DEFAULT_FLAG_KEY="C-c"
+DEFAULT_FLAG_PICKER_KEY="M-c"
 DEFAULT_TIMER_KEY="C-t"
 DEFAULT_TIMER_MENU_KEY="M-t"
 DEFAULT_TIMER_AUTOFOCUS="on"   # auto pause/resume timers on tab focus

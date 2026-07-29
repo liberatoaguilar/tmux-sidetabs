@@ -78,7 +78,7 @@ bind_keys() {
     # configurable. Set an option to "none" to skip its binding (an empty
     # string can't disable: show-option can't distinguish it from unset, so
     # the default would substitute).
-    local flag_key timer_key timer_menu_key
+    local flag_key flag_picker_key timer_key timer_menu_key
     flag_key="$(get_tmux_option "@sidetabs-flag-key" "$DEFAULT_FLAG_KEY")"
     case "$flag_key" in none) flag_key="" ;; esac
     if [ -n "$flag_key" ]; then
@@ -86,6 +86,17 @@ bind_keys() {
             "if-shell -F '#{==:#{@is_sidetab},1}' \
                 'run-shell -b \"$SCRIPTS_DIR/flag_cycle.sh #{window_id}\"' \
                 'send-keys $flag_key'"
+    fi
+
+    # Picker: same relationship to the cycle key as M-t has to C-t — the key
+    # steps, the meta-key opens the full menu.
+    flag_picker_key="$(get_tmux_option "@sidetabs-flag-picker-key" "$DEFAULT_FLAG_PICKER_KEY")"
+    case "$flag_picker_key" in none) flag_picker_key="" ;; esac
+    if [ -n "$flag_picker_key" ]; then
+        tmux bind-key -n "$flag_picker_key" \
+            "if-shell -F '#{==:#{@is_sidetab},1}' \
+                'run-shell -b \"$SCRIPTS_DIR/flag_picker.sh #{window_id} #{client_name}\"' \
+                'send-keys $flag_picker_key'"
     fi
 
     timer_key="$(get_tmux_option "@sidetabs-timer-key" "$DEFAULT_TIMER_KEY")"

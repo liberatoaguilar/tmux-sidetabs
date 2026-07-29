@@ -38,8 +38,8 @@ sb0="$(tmux -L "$SOCKET" list-panes -t "$w0" -F '#{pane_id} #{@is_sidetab}' | aw
 sb1="$(tmux -L "$SOCKET" list-panes -t "$w1" -F '#{pane_id} #{@is_sidetab}' | awk '$2==1{print $1}')"
 [ -n "$w0" ] && [ -n "$w1" ] && [ -n "$sb0" ] && [ -n "$sb1" ] || fail "setup: expected 2 windows with sidebars"
 
-# 2. Flag cycles 1..4 then unsets (default palette has 4 colors).
-for want in 1 2 3 4; do
+# 2. Flag cycles 1..8 then unsets (default palette has 8 colors).
+for want in 1 2 3 4 5 6 7 8; do
   tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/flag_cycle.sh $w0"
   got="$(winopt "$w0" @sidetabs_flag)"
   [ "$got" = "$want" ] || fail "flag cycle: expected $want, got '$got'"
@@ -47,7 +47,52 @@ done
 tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/flag_cycle.sh $w0"
 got="$(winopt "$w0" @sidetabs_flag)"
 [ -z "$got" ] || fail "flag cycle: expected unset after full cycle, got '$got'"
-pass "flag cycles 1->4->unset"
+pass "flag cycles 1->8->unset"
+
+# 2b. flag_set: direct index set, clear via none/0, invalid input ignored.
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/flag_set.sh $w0 5"
+got="$(winopt "$w0" @sidetabs_flag)"
+[ "$got" = "5" ] || fail "flag_set 5: expected 5, got '$got'"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/flag_set.sh $w0 none"
+got="$(winopt "$w0" @sidetabs_flag)"
+[ -z "$got" ] || fail "flag_set none: expected unset, got '$got'"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/flag_set.sh $w0 3"
+got="$(winopt "$w0" @sidetabs_flag)"
+[ "$got" = "3" ] || fail "flag_set 3: expected 3, got '$got'"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/flag_set.sh $w0 99"
+got="$(winopt "$w0" @sidetabs_flag)"
+[ "$got" = "3" ] || fail "flag_set 99 (out of range) changed flag: '$got'"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/flag_set.sh $w0 garbage"
+got="$(winopt "$w0" @sidetabs_flag)"
+[ "$got" = "3" ] || fail "flag_set garbage changed flag: '$got'"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/flag_set.sh $w0 0"
+got="$(winopt "$w0" @sidetabs_flag)"
+[ -z "$got" ] || fail "flag_set 0: expected unset, got '$got'"
+pass "flag_set sets/clears; out-of-range and garbage ignored"
+
+# 2c. Picker menu construction (--print: one 'key<TAB>value<TAB>label' line per
+#     item): 8 color items + 1 clear item, swatch colors present, the current
+#     selection marked, clear item on key 0.
+PICKOUT="${TMPDIR:-/tmp}/sidetabs_picker_$$.out"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/flag_set.sh $w0 3"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/flag_picker.sh --print $w0 > $PICKOUT"
+nitems="$(grep -c . "$PICKOUT" || true)"
+[ "$nitems" = "9" ] || fail "picker --print: expected 9 items (8 colors + clear), got $nitems"
+head -1 "$PICKOUT" | grep -q '#ebcb8b' || fail "picker item 1 missing first palette color"
+head -1 "$PICKOUT" | cut -f1 | grep -qx '1' || fail "picker item 1 not on key 1"
+awk -F'\t' '$2 == "3"' "$PICKOUT" | grep -q '(current)' \
+  || fail "picker did not mark index 3 as current"
+if awk -F'\t' '$2 != "3"' "$PICKOUT" | grep -q '(current)'; then
+  fail "picker marked a non-current item as current"
+fi
+clearline="$(awk -F'\t' '$2 == "none"' "$PICKOUT")"
+[ -n "$clearline" ] || fail "picker has no clear item"
+echo "$clearline" | cut -f1 | grep -qx '0' || fail "clear item not on key 0"
+nkeys="$(cut -f1 "$PICKOUT" | sort -u | grep -c . || true)"
+[ "$nkeys" = "9" ] || fail "picker shortcut keys not unique: $nkeys distinct of 9"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/flag_set.sh $w0 none"
+rm -f "$PICKOUT"
+pass "picker menu: 9 items, keys unique, current marked, clear on 0"
 
 # 3. Flag renders (preset 1 #ebcb8b -> SGR 48;2;235;203;139) and beats ACTIVE
 #    (#88c0d0 -> 48;2;136;192;208 must be absent from the flagged row).
@@ -61,6 +106,19 @@ if echo "$row" | grep -q '48;2;136;192;208'; then
   fail "active bg present on flagged row (flag should beat active)"
 fi
 pass "flag color renders and beats active"
+
+# 3b. A slot from the extended palette renders too (index 7 = #9d7cd8 ->
+#     48;2;157;124;216). render.sh builds its SEG_FLAG array from the palette,
+#     so this guards the list growing past the original 4 slots. Restore index 1
+#     afterwards: the collapsed-mode check below asserts on #ebcb8b.
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/flag_set.sh $w0 7"
+sleep 0.8
+cap="$(tmux -L "$SOCKET" capture-pane -e -p -t "$sb0")"
+echo "$cap" | grep -q '48;2;157;124;216' \
+  || fail "extended palette index 7 (#9d7cd8) not rendered in the pill"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/flag_set.sh $w0 1"
+sleep 0.5
+pass "extended palette index 7 renders"
 
 # 4. Flag renders in collapsed mode too.
 tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/toggle_collapse.sh"
@@ -231,11 +289,15 @@ pass "collapsed hides timer line; focus-held state persists"
 
 # 14. Keys bound on load; uninstall removes them AND all v2 focus-engine hooks.
 tmux -L "$SOCKET" list-keys -T root | grep -q 'flag_cycle.sh' || fail "flag key not bound"
+tmux -L "$SOCKET" list-keys -T root | grep -q 'flag_picker.sh' || fail "flag picker key not bound"
 tmux -L "$SOCKET" list-keys -T root | grep -q 'timer.sh' || fail "timer key not bound"
 tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/uninstall.sh"
 sleep 0.3
 if tmux -L "$SOCKET" list-keys -T root 2>/dev/null | grep -q 'flag_cycle.sh'; then
   fail "flag key survived uninstall"
+fi
+if tmux -L "$SOCKET" list-keys -T root 2>/dev/null | grep -q 'flag_picker.sh'; then
+  fail "flag picker key survived uninstall"
 fi
 if tmux -L "$SOCKET" list-keys -T root 2>/dev/null | grep -q 'timer.sh'; then
   fail "timer key survived uninstall"
