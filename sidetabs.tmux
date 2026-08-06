@@ -117,6 +117,20 @@ bind_keys() {
                 'send-keys $timer_menu_key'"
     fi
 
+    # Note editor: same sidebar gate as the flag/timer keys, but the action is a
+    # popup running $EDITOR. display-popup needs a client, which a key binding
+    # always has (unlike a `run-shell -b` hook), so it is invoked directly here
+    # rather than from inside note.sh.
+    local note_key
+    note_key="$(get_tmux_option "@sidetabs-note-key" "$DEFAULT_NOTE_KEY")"
+    case "$note_key" in none) note_key="" ;; esac
+    if [ -n "$note_key" ]; then
+        tmux bind-key -n "$note_key" \
+            "if-shell -F '#{==:#{@is_sidetab},1}' \
+                'display-popup -E -w 70% -h 60% -T \" note \" \"$SCRIPTS_DIR/note.sh edit-popup #{window_id}\"' \
+                'send-keys $note_key'"
+    fi
+
     local skip_nav
     skip_nav="$(get_tmux_option "@sidetabs-skip-nav" "$DEFAULT_SKIP_NAV")"
     if [ "$skip_nav" = "on" ]; then

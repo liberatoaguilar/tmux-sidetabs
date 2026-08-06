@@ -63,3 +63,7 @@ done
 # Bring per-window timers back from the durable event log (window ids changed
 # across the restart, so this matches by session + window name).
 "$CURRENT_DIR/timer_restore.sh" || true
+
+# Same story for per-window notes: the live option died with the server, the
+# TSV note store is the durable record (also matched by session + window name).
+"$CURRENT_DIR/note.sh" restore || true

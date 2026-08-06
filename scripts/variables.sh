@@ -56,6 +56,7 @@ FLAG_OPTION="@sidetabs_flag"                # 1-based index into @sidetabs-flag-
 TIMER_STATE_OPTION="@sidetabs_timer_state"  # "run" | "pause" | unset
 TIMER_START_OPTION="@sidetabs_timer_start"  # epoch seconds when the running interval started
 TIMER_ACC_OPTION="@sidetabs_timer_acc"      # accumulated seconds from completed intervals
+NOTE_OPTION="@sidetabs_note"                # free-text note; presence shows a glyph on the row
 
 # Flag/timer defaults (overridable via user options)
 # Palette order is API: the window option stores a 1-based INDEX, so slots 1-4
@@ -75,3 +76,12 @@ DEFAULT_TIMER_MENU_KEY="M-t"
 DEFAULT_TIMER_AUTOFOCUS="on"   # auto pause/resume timers on tab focus
 DEFAULT_TIMER_RESTORE="on"     # re-seed timers from the event log after a restore
 DEFAULT_TIMER_LOG="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/timelog.tsv"
+
+# Notes. Unlike flags/timers the note text is durable on its own: every set/clear
+# writes through to a TSV store keyed by (session name, window name), which
+# note.sh restore replays after a server restart. The row glyph is presence-only
+# — the text itself is never interpolated into a render format.
+DEFAULT_NOTE_KEY="M-n"
+DEFAULT_NOTE_ICON=$'\xef\x89\x89'   # U+F249 nerd-font sticky-note
+DEFAULT_NOTE_STORE="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/notes.tsv"
+NOTE_MAX_CHARS="200"

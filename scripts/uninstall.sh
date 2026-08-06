@@ -46,6 +46,9 @@ case "$timer_key" in none) timer_key="" ;; esac
 timer_menu_key="$(get_tmux_option "@sidetabs-timer-menu-key" "$DEFAULT_TIMER_MENU_KEY")"
 case "$timer_menu_key" in none) timer_menu_key="" ;; esac
 [ -n "$timer_menu_key" ] && tmux unbind-key -n "$timer_menu_key" 2>/dev/null || true
+note_key="$(get_tmux_option "@sidetabs-note-key" "$DEFAULT_NOTE_KEY")"
+case "$note_key" in none) note_key="" ;; esac
+[ -n "$note_key" ] && tmux unbind-key -n "$note_key" 2>/dev/null || true
 
 # Unbind the navigation + window-management overrides (C-h is left to the user's).
 for k in 'C-j' 'C-k' 'C-n' 'C-r' 'C-x' 'M-j' 'M-k'; do

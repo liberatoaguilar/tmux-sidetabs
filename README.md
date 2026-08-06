@@ -70,6 +70,7 @@ run-shell '/path/to/tmux-sidetabs/sidetabs.tmux'
 | `M-c` (in sidebar) | Open the flag color **picker**: a menu of live color swatches — press `1`-`8` to jump straight to a color, `0` to clear |
 | `C-t` (in sidebar) | Start / pause / resume the current window's stopwatch; counting pauses when the window loses focus (hourglass glyph ⏳ = auto-held, counting resumes on focus) |
 | `M-t` (in sidebar) | Open the timer menu: adjust total time, cancel current interval, or reset the timer |
+| `M-n` (in sidebar) | Edit the current window's **note** in a popup (`$EDITOR`); save an empty buffer to clear it. Windows with a note show a sticky-note glyph  |
 
 `C-j` / `C-k` outside the sidebar keep their normal `select-pane -D/-U` behavior
 (and forward to vim when a vim-like process has focus). The window-management
@@ -110,6 +111,9 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-timer-menu-key` | `M-t` | Key to open the timer menu (adjust total, cancel current interval, or reset) |
 | `@sidetabs-timer-autofocus` | `on` | `off` to disable auto pause/resume when window loses/gains focus |
 | `@sidetabs-timer-restore` | `on` | `off` to disable re-seeding timers from the event log after a tmux-resurrect restore |
+| `@sidetabs-note-key` | `M-n` | Key to open the note editor popup for the current window (`none` to disable) |
+| `@sidetabs-note-icon` | (sticky note) | Glyph shown on rows that have a note. Any string works — set it to something ASCII if your font lacks Nerd Font glyphs. A multi-character icon is measured and takes its columns from the window name, so a long one leaves less room for the name |
+| `@sidetabs-note-store` | `~/.local/share/tmux-sidetabs/notes.tsv` | Path to the durable note store (TSV: session, window name, note — one row per noted window) |
 | `@sidetabs-timer-log` | `~/.local/share/tmux-sidetabs/timelog.tsv` | Path to the timer event log (TSV: timestamp, event type, interval start, interval duration, total, session, window, window_id, cwd; events are `start` / `resume` / `pause` / `auto-pause` / `auto-resume` / `adjust` / `cancel` / `reset` / `restore`) |
 
 Example:
@@ -178,6 +182,17 @@ original `C-h` / `C-j` / `C-k` bindings.)
   if timing a long task, pause first to ensure it's logged.
 - Timers use wall-clock time: laptop sleep counts toward elapsed time. The timer
   continues even when the sidebar is collapsed.
+- **Notes**: `M-n` (sidebar focused) opens the current window's note in a popup
+  running your `$EDITOR`; the whole buffer is collapsed to one line, stripped of
+  control characters and capped at 200 characters. Saving an empty buffer clears
+  the note. The row shows the note's **presence** only — a sticky-note glyph
+  after the window flags, never the text — and only in expanded mode (the
+  collapsed strip has no room for it). Notes survive restarts on their own: every
+  edit writes through to `@sidetabs-note-store`, and the post-restore hook
+  re-seeds live windows from it, matched by session + window *name* (so renaming
+  a window detaches its stored note until you next edit it, and with duplicate
+  names only the lowest-indexed window is seeded). A window that already has a
+  note is never overwritten by a restore.
 
 ## tmux-resurrect integration
 
@@ -190,7 +205,8 @@ set-option -g @resurrect-hook-post-save-all    'bash <plugin>/scripts/resurrect_
 ```
 
 pre/post suppress duplicate sidebars during a restore, adopt the restored strips
-in place, move focus off the sidebar into a content pane, and restore timers.
+in place, move focus off the sidebar into a content pane, and restore timers and
+notes.
 The post-save scrub rewrites the sidebar strip lines inside the resurrect save
 file (cwd -> the window's first content pane's cwd; active flag -> that pane):
 without it, tmux-resurrect builds every window with `new-window -c <first

@@ -101,6 +101,21 @@ DIR_ICON="$(printf '\xef\x81\xbb')"  # U+F07B folder
 TIMER_RUN_ICON="$(printf '\xef\x81\x8b')"    # U+F04B nerd-font play
 TIMER_PAUSE_ICON="$(printf '\xef\x81\x8c')"  # U+F04C nerd-font pause
 TIMER_HOLD_ICON="$(printf '\xef\x89\x92')"   # U+F252 nerd-font hourglass-half (auto-held)
+NOTE_ICON="$(get_tmux_option '@sidetabs-note-icon' "$DEFAULT_NOTE_ICON")"  # U+F249 sticky-note
+# Display width of the note icon, measured ONCE at startup (emit_row runs ~N
+# times per tick, so no forks in there). Unlike every other glyph here,
+# @sidetabs-note-icon is documented as "any string" — hardcoding its width
+# under-reserves columns for anything but a single glyph and the row's cap +
+# arrow wrap onto the next screen line. ${#…} can't be used directly either: it
+# counts BYTES outside a UTF-8 locale, so the default 3-byte glyph would claim 3
+# columns. Deleting UTF-8 continuation bytes (0x80-0xbf) leaves exactly one byte
+# per codepoint in ANY locale. Codepoints, not columns: a double-width icon
+# (emoji) still under-counts — that is the documented cost of choosing one.
+NOTE_ICON_W=0
+if [ -n "$NOTE_ICON" ]; then
+    NOTE_ICON_W="$(printf '%s' "$NOTE_ICON" | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c | tr -d ' ')"
+    case "$NOTE_ICON_W" in ''|*[!0-9]*|0) NOTE_ICON_W=1 ;; esac
+fi
 TAB="$(printf '\t')"
 US=$'\x1f'   # field separator for multi-value option reads (never in content)
 BOLD="${ESC}[1m"; NOBOLD="${ESC}[22m"; RESET="${ESC}[0m"
@@ -160,11 +175,13 @@ emit_header() {
     printf -v ROW '%s%s%s%s%s%s%s%s' "$SEG_HDR" "$BOLD" "$label" "$NOBOLD" "$spaces" "$CAP_HDR" "$ARROW" "$RESET"
 }
 
-# emit_row <active> <bell> <activity> <flagidx> <idx> <flags> <name> <width> <collapsed> [icon]
+# emit_row <active> <bell> <activity> <flagidx> <idx> <flags> <name> <width> <collapsed> [icon] [hasnote]
+# New parameters go at the END: every call site passes positionally, so an
+# inserted argument silently corrupts every row.
 # Sets ROW.
 emit_row() {
-    local active="$1" bell="$2" activity="$3" flagidx="$4" idx="$5" flags="$6" name="$7" width="$8" collapsed="$9" icon="${10:-}"
-    local seg cap avail nm used pad spaces icon_seg icon_w
+    local active="$1" bell="$2" activity="$3" flagidx="$4" idx="$5" flags="$6" name="$7" width="$8" collapsed="$9" icon="${10:-}" hasnote="${11:-0}"
+    local seg cap avail nm used pad spaces icon_seg icon_w note_seg note_w
     case "$flagidx" in ''|*[!0-9]*) flagidx=0 ;; esac   # unset/garbage -> no flag
     if [ "$bell" = "1" ]; then seg="$SEG_BELL"; cap="$CAP_BELL"
     elif [ "$flagidx" -ge 1 ] && [ "$flagidx" -le "$FLAG_N" ]; then
@@ -200,21 +217,46 @@ emit_row() {
     icon_seg=""; icon_w=0
     [ -n "$icon" ] && { icon_seg=" ${icon}"; icon_w=2; }
 
+    # Note glyph rides after the flags: a leading space + the icon's own width,
+    # measured once at startup (NOTE_ICON_W) because @sidetabs-note-icon is
+    # user-settable to any string — assuming one column overflows the row.
+    # Presence only: the note text itself never reaches this function.
+    note_seg=""; note_w=0
+    [ "$hasnote" = "1" ] && [ -n "$NOTE_ICON" ] && { note_seg=" ${NOTE_ICON}"; note_w=$((1 + NOTE_ICON_W)); }
+
     nm=" ${name}"
     [ -n "$flags" ] && nm="${nm} ${flags}"
-    nm="${nm} "
-    used=$((1 + ${#idx} + 1 + 1 + icon_w + ${#nm}))
+    used=$((1 + ${#idx} + 1 + 1 + icon_w + ${#nm} + note_w + 1))
     if [ "$used" -gt "$avail" ]; then
+        # Shrink in a fixed order so a narrow sidebar (or a wide custom note
+        # icon) degrades predictably instead of spilling the cap+arrow onto the
+        # next screen line: name+flags first, then the command icon (derived
+        # state), then the note glyph (explicitly user-set, so it goes last).
+        # Each segment first gives up its leading space — same trick as the
+        # collapsed branch — before being dropped entirely. Below ~" N ‹thin› "
+        # nothing is left to trim and the index wins; tmux clips the remainder.
         local over=$((used - avail)) newlen
         newlen=$((${#nm} - over)); [ "$newlen" -lt 0 ] && newlen=0
         nm="${nm:0:newlen}"
-        used=$((1 + ${#idx} + 1 + 1 + icon_w + ${#nm}))
+        used=$((1 + ${#idx} + 1 + 1 + icon_w + ${#nm} + note_w + 1))
+        if [ "$used" -gt "$avail" ] && [ "$icon_w" -gt 0 ]; then
+            icon_seg="$icon"; icon_w=$((icon_w - 1)); used=$((used - 1))
+            if [ "$used" -gt "$avail" ]; then
+                icon_seg=""; used=$((used - icon_w)); icon_w=0
+            fi
+        fi
+        if [ "$used" -gt "$avail" ] && [ "$note_w" -gt 0 ]; then
+            note_seg="$NOTE_ICON"; note_w=$((note_w - 1)); used=$((used - 1))
+            if [ "$used" -gt "$avail" ]; then
+                note_seg=""; used=$((used - note_w)); note_w=0
+            fi
+        fi
     fi
     pad=$((avail - used)); [ "$pad" -lt 0 ] && pad=0
     printf -v spaces '%*s' "$pad" ''
 
-    printf -v ROW '%s %s%s%s %s%s%s%s%s%s%s' \
-        "$seg" "$BOLD" "$idx" "$NOBOLD" "$THIN" "$icon_seg" "$nm" "$spaces" "$cap" "$ARROW" "$RESET"
+    printf -v ROW '%s %s%s%s %s%s%s%s %s%s%s%s' \
+        "$seg" "$BOLD" "$idx" "$NOBOLD" "$THIN" "$icon_seg" "$nm" "$note_seg" "$spaces" "$cap" "$ARROW" "$RESET"
 }
 
 # seconds -> HH:MM:SS (pure bash arithmetic; hours may exceed 99). Sets HMS.
@@ -398,7 +440,10 @@ build_lines() {
         fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{?${FLAG_OPTION},#{${FLAG_OPTION}},0}${TAB}#{window_index}${TAB}#{window_id}"
         while IFS="$TAB" read -r active bell activity flagidx idx wid; do
             icon=""; [ "$icons_on" = "on" ] && { get_icon "$wid"; icon="$ICON"; }
-            emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "" "" "$width" 1 "$icon"
+            # hasnote is hardcoded 0: the collapsed strip is ~5 columns wide —
+            # number + command icon already fill it, so there is no room for a
+            # note glyph. Notes are an expanded-mode affordance.
+            emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "" "" "$width" 1 "$icon" 0
             LINES+=("$ROW")
             ROW_WIN[$(( ${#LINES[@]} - 1 ))]="$wid"
         done < <(tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null)
@@ -412,15 +457,24 @@ build_lines() {
 
     # All fields are non-empty booleans/numbers/ids (no #{window_flags}, which can
     # be empty and would collapse under tab-splitting). Flags are rebuilt below.
-    fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_last_flag}${TAB}#{window_zoomed_flag}${TAB}#{?${FLAG_OPTION},#{${FLAG_OPTION}},0}${TAB}#{?${TIMER_STATE_OPTION},#{${TIMER_STATE_OPTION}},-}${TAB}#{?${TIMER_START_OPTION},#{${TIMER_START_OPTION}},0}${TAB}#{?${TIMER_ACC_OPTION},#{${TIMER_ACC_OPTION}},0}${TAB}#{window_index}${TAB}#{window_id}${TAB}#{window_name}"
-    while IFS="$TAB" read -r active bell activity last zoomed flagidx tstate tstart tacc idx wid name; do
+    # hasnote is the note's PRESENCE (1/0) — never the text. The text is
+    # sanitized at write time, but keeping it out of this TAB-split format
+    # removes the whole class of "a note broke every row" failures.
+    # It uses #{!=:…,} (is the value a non-empty string?) rather than the
+    # #{?OPT,…} truthiness test the other options use: those hold a constrained
+    # domain (flag indices >= 1, timer states run/pause/hold), but a note is free
+    # text, and tmux's ternary reads the literal value "0" as FALSE — a note of
+    # "0" is set yet would show no glyph. The comparison splits on the literal
+    # comma before expanding, so a comma inside the note text is safe.
+    fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_last_flag}${TAB}#{window_zoomed_flag}${TAB}#{?${FLAG_OPTION},#{${FLAG_OPTION}},0}${TAB}#{?${TIMER_STATE_OPTION},#{${TIMER_STATE_OPTION}},-}${TAB}#{?${TIMER_START_OPTION},#{${TIMER_START_OPTION}},0}${TAB}#{?${TIMER_ACC_OPTION},#{${TIMER_ACC_OPTION}},0}${TAB}#{!=:#{${NOTE_OPTION}},}${TAB}#{window_index}${TAB}#{window_id}${TAB}#{window_name}"
+    while IFS="$TAB" read -r active bell activity last zoomed flagidx tstate tstart tacc hasnote idx wid name; do
         flags=""
         [ "$active" = "1" ] && flags="*"
         [ "$last" = "1" ] && flags="${flags}-"
         [ "$zoomed" = "1" ] && flags="${flags}Z"
         LINES+=("$RULE_LINE")                         # rule line
         icon=""; [ "$icons_on" = "on" ] && { get_icon "$wid"; icon="$ICON"; }
-        emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "$flags" "$name" "$width" 0 "$icon"
+        emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "$flags" "$name" "$width" 0 "$icon" "$hasnote"
         LINES+=("$ROW")
         ROW_WIN[$(( ${#LINES[@]} - 1 ))]="$wid"       # index of the row just added
         if [ "$tstate" = "run" ] || [ "$tstate" = "pause" ] || [ "$tstate" = "hold" ]; then
