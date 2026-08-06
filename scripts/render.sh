@@ -103,7 +103,6 @@ TIMER_PAUSE_ICON="$(printf '\xef\x81\x8c')"  # U+F04C nerd-font pause
 TIMER_HOLD_ICON="$(printf '\xef\x89\x92')"   # U+F252 nerd-font hourglass-half (auto-held)
 NOTE_ICON="$(get_tmux_option '@sidetabs-note-icon' "$DEFAULT_NOTE_ICON")"  # U+F249 sticky-note
 AGENT_DONE_ICON="$(printf '\xef\x80\x8c')"   # U+F00C nerd-font check (agent finished)
-AGENT_WAIT_ICON="!"                          # sub-line marker for "waiting for you"
 # Braille spinner frames for the "working" state. No timer and no extra wakeups:
 # the frame is a pure function of the WALL CLOCK, sampled when a row that needs
 # it is built, so a visible sidebar animates on its existing 0.5s redraw and a
@@ -115,8 +114,11 @@ AGENT_WAIT_ICON="!"                          # sub-line marker for "waiting for 
 # row showed a different frame in every sidebar, so switching into a working
 # window made its spinner jump instead of continue. Fixed 4 frames, 1 display
 # column each.
-SPIN_FRAMES=("$(printf '\xe2\xa0\x8b')" "$(printf '\xe2\xa0\x99')" \
-             "$(printf '\xe2\xa0\xb9')" "$(printf '\xe2\xa0\xb8')")
+# "flipdots": top-row dots / bottom-row dots (U+281B / U+2836), a 1s blink at
+# the 0.5s tick. Chosen over the classic 10-frame rotation, which crawls at
+# this cadence (5s/rev) — more frames = slower, since frames only advance on
+# the tick that already exists.
+SPIN_FRAMES=("$(printf '\xe2\xa0\x9b')" "$(printf '\xe2\xa0\xb6')")
 SPIN_N="${#SPIN_FRAMES[@]}"
 SPIN_MS=500   # ms per frame; matches the visible tick, so no frame is skipped
 # Display width of the note icon, measured ONCE at startup (emit_row runs ~N
@@ -211,14 +213,14 @@ emit_header() {
     printf -v ROW '%s%s%s%s%s%s%s%s' "$SEG_HDR" "$BOLD" "$label" "$NOBOLD" "$spaces" "$CAP_HDR" "$ARROW" "$RESET"
 }
 
-# emit_row <active> <bell> <activity> <flagidx> <idx> <flags> <name> <width> <collapsed> [icon] [hasnote] [agent] [spinner]
+# emit_row <active> <bell> <activity> <flagidx> <idx> <flags> <name> <width> <collapsed> [icon] [hasnote] [agent] [spinner] [age]
 # New parameters go at the END: every call site passes positionally, so an
 # inserted argument silently corrupts every row.
 #   agent   = working | attention | done | - (the window AGGREGATE)
 #   spinner = this tick's braille frame, computed once per tick by build_lines
 # Sets ROW.
 emit_row() {
-    local active="$1" bell="$2" activity="$3" flagidx="$4" idx="$5" flags="$6" name="$7" width="$8" collapsed="$9" icon="${10:-}" hasnote="${11:-0}" agent="${12:--}" spinner="${13:-}"
+    local active="$1" bell="$2" activity="$3" flagidx="$4" idx="$5" flags="$6" name="$7" width="$8" collapsed="$9" icon="${10:-}" hasnote="${11:-0}" agent="${12:--}" spinner="${13:-}" age="${14:-}"
     local seg cap avail nm used pad spaces icon_seg icon_w note_seg note_w stat_seg stat_w
     case "$flagidx" in ''|*[!0-9]*) flagidx=0 ;; esac   # unset/garbage -> no flag
     # "attention" is a bell in every way that matters — the agent is blocked on
@@ -272,7 +274,18 @@ emit_row() {
     # own `seg` is re-emitted right after, so the pill stays intact.
     stat_seg=""; stat_w=0
     case "$agent" in
-        working) [ -n "$spinner" ] && { stat_seg=" ${SPIN_FG}${spinner}${seg}"; stat_w=2; } ;;
+        working)
+            # Spinner + elapsed live ON the row ("⠹ 4m") — the one place the
+            # working state shows. attention adds nothing here on purpose: the
+            # bell-red pill IS its signal, text would be redundant.
+            if [ -n "$spinner" ]; then
+                if [ -n "$age" ]; then
+                    stat_seg=" ${SPIN_FG}${spinner} ${age}${seg}"; stat_w=$((3 + ${#age}))
+                else
+                    stat_seg=" ${SPIN_FG}${spinner}${seg}"; stat_w=2
+                fi
+            fi
+            ;;
         done)    stat_seg=" ${AGENT_DONE_FG}${AGENT_DONE_ICON}${seg}"; stat_w=2 ;;
     esac
 
@@ -305,6 +318,12 @@ emit_row() {
                 note_seg=""; used=$((used - note_w)); note_w=0
             fi
         fi
+        if [ "$used" -gt "$avail" ] && [ "$stat_w" -gt 2 ] && [ -n "$spinner" ]; then
+            # The age is the first status casualty: a squeezed row keeps the
+            # spinner ("busy") and gives up the "for how long".
+            used=$((used - stat_w + 2))
+            stat_seg=" ${SPIN_FG}${spinner}${seg}"; stat_w=2
+        fi
         if [ "$used" -gt "$avail" ] && [ "$stat_w" -gt 0 ]; then
             stat_seg="${stat_seg# }"; stat_w=$((stat_w - 1)); used=$((used - 1))
             if [ "$used" -gt "$avail" ]; then
@@ -328,7 +347,7 @@ fmt_hms() {
 }
 
 # seconds -> a coarse human age: "37s" / "12m" / "1h05m". Deliberately NOT
-# fmt_hms: the agent sub-line answers "how long has it been like this", where a
+# fmt_hms: the row age answers "how long has it been like this", where a
 # ticking seconds field is just noise. Sets AGE.
 fmt_age() {
     local s="$1" h m
@@ -573,32 +592,21 @@ build_lines() {
         [ "$zoomed" = "1" ] && flags="${flags}Z"
         LINES+=("$RULE_LINE")                         # rule line
         icon=""; [ "$icons_on" = "on" ] && { get_icon "$wid"; icon="$ICON"; }
-        [ "$agent" = "working" ] && spin_frame          # samples the clock once, lazily
-        emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "$flags" "$name" "$width" 0 "$icon" "$hasnote" "$agent" "$spin"
+        aage=""
+        if [ "$agent" = "working" ]; then
+            spin_frame          # samples the clock once, lazily
+            # "0" is the format's default for an UNSET since, and also what a
+            # half-written aggregate looks like (two set-options are two
+            # round-trips). Treating it as an epoch dated the age from 1970 —
+            # so it means "unknown", same as empty or garbage.
+            case "$asince" in ''|*[!0-9]*|0) asince="$now_s" ;; esac
+            aelapsed=$((now_s - asince)); [ "$aelapsed" -lt 0 ] && aelapsed=0
+            fmt_age "$aelapsed"
+            aage="$AGE"
+        fi
+        emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "$flags" "$name" "$width" 0 "$icon" "$hasnote" "$agent" "$spin" "$aage"
         LINES+=("$ROW")
         ROW_WIN[$(( ${#LINES[@]} - 1 ))]="$wid"       # index of the row just added
-        # Agent sub-line sits directly under its row (the timer line keeps its
-        # place after it, so a window can show both). `done` gets no sub-line —
-        # the check glyph on the row says everything, and a "done · 3h" line
-        # would linger as clutter until the next visit.
-        case "$agent" in
-            working|attention)
-                # "0" is the format's default for an UNSET since, and it is also
-                # what a half-written aggregate looks like (two set-options are
-                # two round-trips). Treating it as an epoch dated the row from
-                # 1970 — "working · 496118h51m" — so it means "unknown", same as
-                # empty or garbage.
-                case "$asince" in ''|*[!0-9]*|0) asince="$now_s" ;; esac
-                aelapsed=$((now_s - asince)); [ "$aelapsed" -lt 0 ] && aelapsed=0
-                fmt_age "$aelapsed"
-                if [ "$agent" = "working" ]; then
-                    emit_summary_icon "$spin" "working · $AGE" "$width" head
-                else
-                    emit_summary_icon "$AGENT_WAIT_ICON" "waiting for you · $AGE" "$width" head
-                fi
-                LINES+=("$ROW")
-                ;;
-        esac
         if [ "$tstate" = "run" ] || [ "$tstate" = "pause" ] || [ "$tstate" = "hold" ]; then
             case "$tacc" in ''|*[!0-9]*) tacc=0 ;; esac
             telapsed="$tacc"

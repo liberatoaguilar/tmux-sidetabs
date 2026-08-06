@@ -41,18 +41,19 @@ agent() { tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/agent_status.sh $*"; 
 AG="@sidetabs_agent"; AGS="@sidetabs_agent_since"
 PAG="@sidetabs_agent_pane"; PAGS="@sidetabs_agent_pane_since"
 
-# Spinner frames (U+280B U+2819 U+2839 U+2838) and the done check (U+F00C).
-S1="$(printf '\xe2\xa0\x8b')"; S2="$(printf '\xe2\xa0\x99')"
-S3="$(printf '\xe2\xa0\xb9')"; S4="$(printf '\xe2\xa0\xb8')"
+# Spinner frames: "flipdots" (U+281B top dots / U+2836 bottom dots), and the
+# done check (U+F00C). has_spinner must know EVERY frame — the rendered one is
+# a function of the wall clock, so matching a subset flakes.
+S1="$(printf '\xe2\xa0\x9b')"; S2="$(printf '\xe2\xa0\xb6')"
 CHECK="$(printf '\xef\x80\x8c')"
 BELL_SGR='48;2;191;97;106'      # @sidetabs-bell-bg #bf616a
 FLAG1_SGR='48;2;235;203;139'    # flag palette slot 1 #ebcb8b
 DONE_SGR='38;2;163;190;140'     # agent done fg #a3be8c
-has_spinner() { grep -q -e "$S1" -e "$S2" -e "$S3" -e "$S4"; }
+has_spinner() { grep -q -e "$S1" -e "$S2"; }
 # Which frame a rendered line carries (empty if none).
 spin_of() {
   local line="$1" f
-  for f in "$S1" "$S2" "$S3" "$S4"; do
+  for f in "$S1" "$S2"; do
     case "$line" in *"$f"*) printf '%s' "$f"; return 0 ;; esac
   done
 }
@@ -172,7 +173,7 @@ pass "a visit consumes done + attention; working survives"
 agent "clear $p1b"
 sleep 0.3
 
-# --- 9. Render: working shows a spinner frame on the row + a 'working ·' line
+# --- 9. Render: working shows a spinner frame + age on the row, no sub-line
 # beta's states are viewed from alpha's sidebar so that selecting a window never
 # consumes what we are about to assert on.
 tmux -L "$SOCKET" select-window -t "$w0"; sleep 0.6
@@ -182,10 +183,12 @@ cap="$(tmux -L "$SOCKET" capture-pane -p -t "$sb0")"
 betaline="$(printf '%s\n' "$cap" | grep -- 'beta' | head -1)"
 [ -n "$betaline" ] || fail "beta row not rendered at all"
 printf '%s\n' "$betaline" | has_spinner || fail "no spinner frame on the working row: [$betaline]"
-printf '%s\n' "$cap" | grep -q 'working ·' || fail "no 'working ·' sub-line rendered"
-printf '%s\n' "$cap" | grep -q 'working ·' && printf '%s\n' "$cap" | grep 'working ·' | has_spinner \
-  || fail "the working sub-line carries no spinner"
-pass "working renders a spinner on the row and a 'working ·' sub-line"
+printf '%s\n' "$betaline" | grep -Eq '[0-9]+[smh]' \
+  || fail "no elapsed age next to the spinner on the row: [$betaline]"
+if printf '%s\n' "$cap" | grep -q 'working'; then
+  fail "a 'working' sub-line rendered (row glyph+age is the only working signal now)"
+fi
+pass "working renders spinner + age on the row, no sub-line"
 
 # --- 10. Render: done shows the green check; a visit makes it disappear -----
 agent "done $p1"
@@ -194,7 +197,7 @@ cap="$(tmux -L "$SOCKET" capture-pane -e -p -t "$sb0")"
 betaline="$(printf '%s\n' "$cap" | grep -- 'beta' | head -1)"
 case "$betaline" in *"$CHECK"*) : ;; *) fail "no check glyph on the done row: [$betaline]" ;; esac
 case "$betaline" in *"$DONE_SGR"*) : ;; *) fail "check glyph not painted with the done fg" ;; esac
-if printf '%s\n' "$cap" | grep -q 'working ·'; then fail "done row still shows a working sub-line"; fi
+if printf '%s\n' "$betaline" | has_spinner; then fail "done row still shows a spinner"; fi
 
 tmux -L "$SOCKET" select-window -t "$w1"; sleep 0.8
 tmux -L "$SOCKET" select-window -t "$w0"; sleep 1.2
@@ -215,17 +218,12 @@ alphaline="$(printf '%s\n' "$cap" | grep -- 'alpha' | head -1)"
 case "$betaline" in *"$BELL_SGR"*) : ;; *) fail "attention row is not bell-red: [$betaline]" ;; esac
 case "$alphaline" in *"$FLAG1_SGR"*) : ;; *) fail "flagged non-attention row lost its flag color" ;; esac
 case "$alphaline" in *"$BELL_SGR"*) fail "a non-attention row was painted red" ;; esac
-# At the default width of 20 the sub-line truncates like any summary line, so
-# only the label survives; widen the pane to see the whole "· <age>" tail.
-printf '%s\n' "$cap" | grep -q 'waiting for you' || fail "no 'waiting for you' sub-line rendered"
-tmux -L "$SOCKET" resize-pane -t "$sb0" -x 34
-sleep 1.2
-cap="$(tmux -L "$SOCKET" capture-pane -p -t "$sb0")"
-printf '%s\n' "$cap" | grep -Eq 'waiting for you · [0-9]+[smh]' \
-  || fail "widened sidebar does not show 'waiting for you · <age>'"
-tmux -L "$SOCKET" resize-pane -t "$sb0" -x 20
-sleep 1.0
-pass "attention paints the row bell-red (beats flags); flagged rows keep their color"
+# Attention deliberately has NO sub-line and no age — the red pill is the
+# whole signal (and it works collapsed, unlike any text).
+if printf '%s\n' "$cap" | grep -q 'waiting for you'; then
+  fail "attention rendered a 'waiting for you' sub-line (red pill should be the only signal)"
+fi
+pass "attention paints the row bell-red (beats flags), no sub-line; flags keep their color"
 
 # --- 12. Collapsed mode still shows attention-red (pill color, no glyphs) ---
 run "$PLUGIN_DIR/scripts/toggle_collapse.sh"
@@ -395,11 +393,12 @@ tmux -L "$SOCKET" set-option -w -t "$w1" "$AG" working
 run "$PLUGIN_DIR/scripts/refresh.sh force"
 sleep 1.2
 cap="$(tmux -L "$SOCKET" capture-pane -p -t "$sb0")"
-printf '%s\n' "$cap" | grep -q 'working ·' || fail "setup: no working sub-line for the since-less state"
-printf '%s\n' "$cap" | grep -Eq 'working · [0-9]{3,}h' \
-  && fail "a missing since rendered as an epoch age: [$(printf '%s\n' "$cap" | grep 'working ·')]"
-printf '%s\n' "$cap" | grep -Eq 'working · [0-9]+[sm]' \
-  || fail "a missing since should read as a fresh age: [$(printf '%s\n' "$cap" | grep 'working ·')]"
+betaline="$(printf '%s\n' "$cap" | grep -- 'beta' | head -1)"
+printf '%s\n' "$betaline" | has_spinner || fail "setup: since-less working state not on the row: [$betaline]"
+printf '%s\n' "$betaline" | grep -Eq '[0-9]{3,}h' \
+  && fail "a missing since rendered as an epoch age: [$betaline]"
+printf '%s\n' "$betaline" | grep -Eq '[0-9]+[sm]' \
+  || fail "a missing since should read as a fresh age: [$betaline]"
 tmux -L "$SOCKET" set-option -w -t "$w1" -u "$AG"
 tmux -L "$SOCKET" resize-pane -t "$sb0" -x 20
 sleep 1.0

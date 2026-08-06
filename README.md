@@ -134,8 +134,8 @@ tabs are busy, which are waiting on you, and which are done:
 
 | Sidebar shows | State | Meaning |
 | --- | --- | --- |
-| spinner ⠹ on the row + `⠹ working · 4m` under it | `working` | the agent is off doing something |
-| the whole row goes **bell-red** + `! waiting for you · 2m` under it | `attention` | the agent is blocked on you (permission prompt, question) |
+| spinner + elapsed on the row (`⠹ 4m`) | `working` | the agent is off doing something |
+| the whole row goes **bell-red** | `attention` | the agent is blocked on you (permission prompt, question) |
 | a green ✓ on the row | `done` | the agent finished its turn |
 
 Nothing is installed for you — wiring is deliberately on your side, in the
@@ -219,8 +219,8 @@ Map session-idle to `done` and any permission/ask event to `attention`:
   looking.) `working` still shows, since it is not a notification.
 - **Elapsed time doesn't restart on re-assertion.** Re-asserting the same state
   keeps the original clock (and skips the redraw entirely), so an agent that
-  fires `working` on every prompt costs nothing and the sub-line keeps answering
-  "how long has it been like this".
+  fires `working` on every prompt costs nothing and the row's elapsed keeps
+  answering "how long has it been like this".
 - **A signal cannot outlive its pane.** If the pane holding it goes away — you
   kill it, the agent crashes, the shell exits — the row is re-derived from the
   panes that are still there. An agent that dies without its `SessionEnd`/`Stop`
