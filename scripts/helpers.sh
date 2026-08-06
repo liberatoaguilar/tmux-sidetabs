@@ -32,6 +32,10 @@ set_pane_option() {
     tmux set-option -p -t "$1" -q "$2" "$3"
 }
 
+unset_pane_option() {
+    tmux set-option -p -t "$1" -qu "$2" 2>/dev/null || true
+}
+
 get_window_option() {
     local window_id="$1" option="$2" default_value="$3" value
     value="$(tmux show-option -w -t "$window_id" -qv "$option" 2>/dev/null)"

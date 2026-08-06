@@ -114,6 +114,8 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-note-key` | `M-n` | Key to open the note editor popup for the current window (`none` to disable) |
 | `@sidetabs-note-icon` | (sticky note) | Glyph shown on rows that have a note. Any string works — set it to something ASCII if your font lacks Nerd Font glyphs. A multi-character icon is measured and takes its columns from the window name, so a long one leaves less room for the name |
 | `@sidetabs-note-store` | `~/.local/share/tmux-sidetabs/notes.tsv` | Path to the durable note store (TSV: session, window name, note — one row per noted window) |
+| `@sidetabs-agent-status` | `on` | `off` stops any new agent signal being raised **and** hides any that is already showing (see [Agent status](#agent-status)) — the agent-side hooks can stay installed, they just stop costing anything. Flipping it off mid-turn is safe: a row that was lit at the time goes quiet immediately, and visiting the tab still clears the stored state |
+| `@sidetabs-agent-done-fg` | `#a3be8c` | Color of the ✓ glyph on a finished agent's row (nord14) |
 | `@sidetabs-timer-log` | `~/.local/share/tmux-sidetabs/timelog.tsv` | Path to the timer event log (TSV: timestamp, event type, interval start, interval duration, total, session, window, window_id, cwd; events are `start` / `resume` / `pause` / `auto-pause` / `auto-resume` / `adjust` / `cancel` / `reset` / `restore`) |
 
 Example:
@@ -123,6 +125,112 @@ set -g @sidetabs-expanded-width 24
 set -g @sidetabs-toggle-key 'b'
 set -g @sidetabs-active-bg '#a3be8c'
 ```
+
+## Agent status
+
+Coding agents (Claude Code, codex, opencode) run inside a pane. Point their tool
+hooks at `scripts/agent_status.sh` and the sidebar tells you, at a glance, which
+tabs are busy, which are waiting on you, and which are done:
+
+| Sidebar shows | State | Meaning |
+| --- | --- | --- |
+| spinner ⠹ on the row + `⠹ working · 4m` under it | `working` | the agent is off doing something |
+| the whole row goes **bell-red** + `! waiting for you · 2m` under it | `attention` | the agent is blocked on you (permission prompt, question) |
+| a green ✓ on the row | `done` | the agent finished its turn |
+
+Nothing is installed for you — wiring is deliberately on your side, in the
+agent's own config. Replace `<plugin>` with the absolute path to your clone.
+
+### Claude Code
+
+In `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "<plugin>/scripts/agent_status.sh working" }] }
+    ],
+    "Notification": [
+      { "hooks": [{ "type": "command", "command": "<plugin>/scripts/agent_status.sh attention" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "<plugin>/scripts/agent_status.sh done" }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "<plugin>/scripts/agent_status.sh clear" }] }
+    ]
+  }
+}
+```
+
+`matcher` is omitted throughout: none of these four events is tool-scoped.
+`PreToolUse` is **deliberately not wired** — it fires on every single tool call,
+so it would spend a process per tool to re-assert a state that `UserPromptSubmit`
+already set. `UserPromptSubmit` is what makes `working` possible at all: it is
+the only signal that says "a turn just started".
+
+### codex
+
+In `~/.codex/config.toml`:
+
+```toml
+notify = ["<plugin>/scripts/agent_status.sh", "codex-notify"]
+```
+
+codex appends its JSON payload as the last argument; the `codex-notify` mode
+parses it without a `jq` dependency (bash's own regex over the `"type"` field).
+It maps `agent-turn-complete` → `done` and any approval/permission/confirm-shaped
+type → `attention`; **anything it does not recognize is a silent no-op**, because
+a wrong signal is worse than no signal. codex has no "turn started" notification,
+so codex tabs generally show `done` and `attention` but never the `working`
+spinner.
+
+Extra arguments of your own in that array are fine — they are ignored, never
+mistaken for a target. The pane is taken from `$TMUX_PANE`; pass
+`"--pane", "%3"` only if you need to override it.
+
+### opencode
+
+No adapter code is needed — a plugin/event hook that execs the same CLI works.
+Map session-idle to `done` and any permission/ask event to `attention`:
+
+```bash
+<plugin>/scripts/agent_status.sh done
+<plugin>/scripts/agent_status.sh attention
+```
+
+### Semantics worth knowing
+
+- **The pane is the unit of truth, the window is what you see.** Each pane keeps
+  its own state; the row shows the *worst* state in the window
+  (`attention` > `working` > `done`). Two agents in one window, one asking for
+  permission and one grinding, shows red.
+- **Visiting a tab consumes the signal**, exactly like a bell: switching to a
+  window — or just moving to another of its panes — clears `done` and `attention`
+  for all of them. `working` survives a visit: it is a fact about the world, not
+  a notification. That holds even when a permission prompt interrupted it, which
+  is the common case — answering the prompt puts the tab back to `working`, on
+  its original clock, for the rest of the turn.
+- **A signal raised on the tab you are already looking at never lights up**,
+  again like a bell, which tmux never raises on the current window: you were
+  there when it happened, so `done` and `attention` are consumed the instant
+  they arrive. (Only with a client attached — nobody attached means nobody
+  looking.) `working` still shows, since it is not a notification.
+- **Elapsed time doesn't restart on re-assertion.** Re-asserting the same state
+  keeps the original clock (and skips the redraw entirely), so an agent that
+  fires `working` on every prompt costs nothing and the sub-line keeps answering
+  "how long has it been like this".
+- **A signal cannot outlive its pane.** If the pane holding it goes away — you
+  kill it, the agent crashes, the shell exits — the row is re-derived from the
+  panes that are still there. An agent that dies without its `SessionEnd`/`Stop`
+  hook firing cannot leave a tab spinning forever.
+- **Collapsed mode shows attention only.** The red pill is a color, so it
+  survives; there is no room for the spinner or the ✓.
+- The whole feature switches off with `set -g @sidetabs-agent-status off` —
+  including anything already on screen when you flip it.
+- Invoked outside tmux, the script exits 0 in silence — safe in a shared
+  `settings.json` that follows you onto machines without tmux.
 
 ## Uninstall
 
@@ -221,3 +329,17 @@ base shell would open in the sidebar's directory, focused on the strip.
 
 Spins up a temporary tmux server (`tmux -L sidetab_test_$$`) and asserts sidetab
 creation, auto-creation on new windows, and the collapse toggle.
+
+The other suites cover one feature area each and run the same way — a throwaway
+server on its own socket, always with `-f /dev/null` so your `~/.tmux.conf`
+cannot leak in:
+
+```bash
+./tests/features_smoke.sh        # flag colors + focus-aware timers
+./tests/visibility_smoke.sh      # the render loop's visibility gate
+./tests/resurrect_smoke.sh       # tmux-resurrect pre/post hooks
+./tests/resurrect_scrub_smoke.sh # post-save rewrite of the save file
+./tests/timer_restore_smoke.sh   # re-seeding timers from the event log
+./tests/notes_smoke.sh           # per-window notes + durable store
+./tests/agent_status_smoke.sh    # agent status: aggregation, visit-clear, render
+```

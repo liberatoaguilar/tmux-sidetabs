@@ -102,6 +102,23 @@ TIMER_RUN_ICON="$(printf '\xef\x81\x8b')"    # U+F04B nerd-font play
 TIMER_PAUSE_ICON="$(printf '\xef\x81\x8c')"  # U+F04C nerd-font pause
 TIMER_HOLD_ICON="$(printf '\xef\x89\x92')"   # U+F252 nerd-font hourglass-half (auto-held)
 NOTE_ICON="$(get_tmux_option '@sidetabs-note-icon' "$DEFAULT_NOTE_ICON")"  # U+F249 sticky-note
+AGENT_DONE_ICON="$(printf '\xef\x80\x8c')"   # U+F00C nerd-font check (agent finished)
+AGENT_WAIT_ICON="!"                          # sub-line marker for "waiting for you"
+# Braille spinner frames for the "working" state. No timer and no extra wakeups:
+# the frame is a pure function of the WALL CLOCK, sampled when a row that needs
+# it is built, so a visible sidebar animates on its existing 0.5s redraw and a
+# HIDDEN one simply freezes mid-spin (nobody is looking, and animating it would
+# defeat the whole visibility gate).
+#
+# Wall clock rather than a per-process loop counter because one render.sh runs
+# per window, each ticking on its own schedule: with a counter, the SAME logical
+# row showed a different frame in every sidebar, so switching into a working
+# window made its spinner jump instead of continue. Fixed 4 frames, 1 display
+# column each.
+SPIN_FRAMES=("$(printf '\xe2\xa0\x8b')" "$(printf '\xe2\xa0\x99')" \
+             "$(printf '\xe2\xa0\xb9')" "$(printf '\xe2\xa0\xb8')")
+SPIN_N="${#SPIN_FRAMES[@]}"
+SPIN_MS=500   # ms per frame; matches the visible tick, so no frame is skipped
 # Display width of the note icon, measured ONCE at startup (emit_row runs ~N
 # times per tick, so no forks in there). Unlike every other glyph here,
 # @sidetabs-note-icon is documented as "any string" — hardcoding its width
@@ -136,6 +153,18 @@ summary_on="$(get_tmux_option '@sidetabs-summary' 'on')"
 icons_on="$(get_tmux_option '@sidetabs-icons' "$DEFAULT_ICONS")"
 flag_fg="$(get_tmux_option '@sidetabs-flag-fg' '#2e3440')"
 flag_colors="$(get_tmux_option '@sidetabs-flag-colors' "$DEFAULT_FLAG_COLORS")"
+agent_done_fg="$(get_tmux_option '@sidetabs-agent-done-fg' "$DEFAULT_AGENT_DONE_FG")"
+
+# Agent aggregate fields for the list-windows formats, with the master switch
+# folded IN rather than read into a shell variable: the switch is a runtime
+# toggle, so a value cached at startup would need a fork per tick to stay fresh,
+# while tmux evaluates this for free inside the interpolation the loop already
+# runs. Reads have to be gated as well as writes — gating only agent_status.sh
+# meant flipping the switch off FROZE whatever row was showing (a bell-red
+# "attention" pill with no way left to clear it) instead of switching it off.
+# Unset reads as "on": only the literal "off" hides anything.
+AGENT_FMT="#{?#{==:#{${AGENT_STATUS_OPTION}},off},-,#{?${AGENT_OPTION},#{${AGENT_OPTION}},-}}"
+AGENT_SINCE_FMT="#{?#{==:#{${AGENT_STATUS_OPTION}},off},0,#{?${AGENT_SINCE_OPTION},#{${AGENT_SINCE_OPTION}},0}}"
 
 # A segment paints bg+fg (no bold); its cap paints the segment's bg as fg over a
 # default bg so the trailing arrow "points" out of the colored block.
@@ -149,6 +178,13 @@ SEG_ACT="$(seg_sgr "$idle_bg" "$activity_fg")";    CAP_ACT="$(cap_sgr "$idle_bg"
 SEG_HDR="$(seg_sgr "$header_bg" "$header_fg")";    CAP_HDR="$(cap_sgr "$header_bg")"
 RULE_SGR="${ESC}[49;38;2;$(hex_rgb "$rule_fg")m"
 SUMMARY_SGR="${ESC}[49;38;2;$(hex_rgb "$summary_fg")m"
+
+# Agent status glyphs ride INSIDE a colored pill, so they may only touch the
+# foreground (38;…) — a bg-resetting SGR like SUMMARY_SGR would punch a hole in
+# the row. Re-emitting the row's own `seg` afterwards restores fg AND bg in one
+# escape, so the pill closes cleanly whatever color it happens to be.
+SPIN_FG="${ESC}[38;2;$(hex_rgb "$summary_fg")m"        # dim, same hue as the summary lines
+AGENT_DONE_FG="${ESC}[38;2;$(hex_rgb "$agent_done_fg")m"
 
 # Flag pill colors: 1-based indexed arrays (bash 3.2 — no assoc arrays); the
 # index matches the @sidetabs_flag window option directly, no translation.
@@ -175,15 +211,21 @@ emit_header() {
     printf -v ROW '%s%s%s%s%s%s%s%s' "$SEG_HDR" "$BOLD" "$label" "$NOBOLD" "$spaces" "$CAP_HDR" "$ARROW" "$RESET"
 }
 
-# emit_row <active> <bell> <activity> <flagidx> <idx> <flags> <name> <width> <collapsed> [icon] [hasnote]
+# emit_row <active> <bell> <activity> <flagidx> <idx> <flags> <name> <width> <collapsed> [icon] [hasnote] [agent] [spinner]
 # New parameters go at the END: every call site passes positionally, so an
 # inserted argument silently corrupts every row.
+#   agent   = working | attention | done | - (the window AGGREGATE)
+#   spinner = this tick's braille frame, computed once per tick by build_lines
 # Sets ROW.
 emit_row() {
-    local active="$1" bell="$2" activity="$3" flagidx="$4" idx="$5" flags="$6" name="$7" width="$8" collapsed="$9" icon="${10:-}" hasnote="${11:-0}"
-    local seg cap avail nm used pad spaces icon_seg icon_w note_seg note_w
+    local active="$1" bell="$2" activity="$3" flagidx="$4" idx="$5" flags="$6" name="$7" width="$8" collapsed="$9" icon="${10:-}" hasnote="${11:-0}" agent="${12:--}" spinner="${13:-}"
+    local seg cap avail nm used pad spaces icon_seg icon_w note_seg note_w stat_seg stat_w
     case "$flagidx" in ''|*[!0-9]*) flagidx=0 ;; esac   # unset/garbage -> no flag
-    if [ "$bell" = "1" ]; then seg="$SEG_BELL"; cap="$CAP_BELL"
+    # "attention" is a bell in every way that matters — the agent is blocked on
+    # YOU — so it shares the bell's treatment and its precedence (above flag
+    # colors). That also makes it the one agent signal that survives collapsed
+    # mode, where the pill color is the only channel left.
+    if [ "$bell" = "1" ] || [ "$agent" = "attention" ]; then seg="$SEG_BELL"; cap="$CAP_BELL"
     elif [ "$flagidx" -ge 1 ] && [ "$flagidx" -le "$FLAG_N" ]; then
         seg="${SEG_FLAG[$flagidx]}"; cap="${CAP_FLAG[$flagidx]}"
     elif [ "$active" = "1" ]; then seg="$SEG_ACTIVE"; cap="$CAP_ACTIVE"
@@ -224,21 +266,33 @@ emit_row() {
     note_seg=""; note_w=0
     [ "$hasnote" = "1" ] && [ -n "$NOTE_ICON" ] && { note_seg=" ${NOTE_ICON}"; note_w=$((1 + NOTE_ICON_W)); }
 
+    # Agent status glyph, last on the row (space + 1-col glyph). Only `working`
+    # and `done` draw one: `attention` already owns the whole pill color, and a
+    # glyph on top of a red row would be noise. Colors are fg-only and the row's
+    # own `seg` is re-emitted right after, so the pill stays intact.
+    stat_seg=""; stat_w=0
+    case "$agent" in
+        working) [ -n "$spinner" ] && { stat_seg=" ${SPIN_FG}${spinner}${seg}"; stat_w=2; } ;;
+        done)    stat_seg=" ${AGENT_DONE_FG}${AGENT_DONE_ICON}${seg}"; stat_w=2 ;;
+    esac
+
     nm=" ${name}"
     [ -n "$flags" ] && nm="${nm} ${flags}"
-    used=$((1 + ${#idx} + 1 + 1 + icon_w + ${#nm} + note_w + 1))
+    used=$((1 + ${#idx} + 1 + 1 + icon_w + ${#nm} + note_w + stat_w + 1))
     if [ "$used" -gt "$avail" ]; then
         # Shrink in a fixed order so a narrow sidebar (or a wide custom note
         # icon) degrades predictably instead of spilling the cap+arrow onto the
         # next screen line: name+flags first, then the command icon (derived
-        # state), then the note glyph (explicitly user-set, so it goes last).
-        # Each segment first gives up its leading space — same trick as the
-        # collapsed branch — before being dropped entirely. Below ~" N ‹thin› "
-        # nothing is left to trim and the index wins; tmux clips the remainder.
+        # state), then the note glyph (explicitly user-set), and the agent status
+        # glyph last of all — at 8 columns "this tab is busy / done" is the one
+        # thing still worth a column. Each segment first gives up its leading
+        # space — same trick as the collapsed branch — before being dropped
+        # entirely. Below ~" N ‹thin› " nothing is left to trim and the index
+        # wins; tmux clips the remainder.
         local over=$((used - avail)) newlen
         newlen=$((${#nm} - over)); [ "$newlen" -lt 0 ] && newlen=0
         nm="${nm:0:newlen}"
-        used=$((1 + ${#idx} + 1 + 1 + icon_w + ${#nm} + note_w + 1))
+        used=$((1 + ${#idx} + 1 + 1 + icon_w + ${#nm} + note_w + stat_w + 1))
         if [ "$used" -gt "$avail" ] && [ "$icon_w" -gt 0 ]; then
             icon_seg="$icon"; icon_w=$((icon_w - 1)); used=$((used - 1))
             if [ "$used" -gt "$avail" ]; then
@@ -251,12 +305,18 @@ emit_row() {
                 note_seg=""; used=$((used - note_w)); note_w=0
             fi
         fi
+        if [ "$used" -gt "$avail" ] && [ "$stat_w" -gt 0 ]; then
+            stat_seg="${stat_seg# }"; stat_w=$((stat_w - 1)); used=$((used - 1))
+            if [ "$used" -gt "$avail" ]; then
+                stat_seg=""; used=$((used - stat_w)); stat_w=0
+            fi
+        fi
     fi
     pad=$((avail - used)); [ "$pad" -lt 0 ] && pad=0
     printf -v spaces '%*s' "$pad" ''
 
-    printf -v ROW '%s %s%s%s %s%s%s%s %s%s%s%s' \
-        "$seg" "$BOLD" "$idx" "$NOBOLD" "$THIN" "$icon_seg" "$nm" "$note_seg" "$spaces" "$cap" "$ARROW" "$RESET"
+    printf -v ROW '%s %s%s%s %s%s%s%s%s %s%s%s%s' \
+        "$seg" "$BOLD" "$idx" "$NOBOLD" "$THIN" "$icon_seg" "$nm" "$note_seg" "$stat_seg" "$spaces" "$cap" "$ARROW" "$RESET"
 }
 
 # seconds -> HH:MM:SS (pure bash arithmetic; hours may exceed 99). Sets HMS.
@@ -265,6 +325,34 @@ fmt_hms() {
     case "$s" in ''|*[!0-9]*) s=0 ;; esac
     h=$((s / 3600)); m=$((s % 3600 / 60)); s=$((s % 60))
     printf -v HMS '%02d:%02d:%02d' "$h" "$m" "$s"
+}
+
+# seconds -> a coarse human age: "37s" / "12m" / "1h05m". Deliberately NOT
+# fmt_hms: the agent sub-line answers "how long has it been like this", where a
+# ticking seconds field is just noise. Sets AGE.
+fmt_age() {
+    local s="$1" h m
+    case "$s" in ''|*[!0-9]*) s=0 ;; esac
+    if [ "$s" -lt 60 ]; then
+        printf -v AGE '%ds' "$s"
+    elif [ "$s" -lt 3600 ]; then
+        printf -v AGE '%dm' "$((s / 60))"
+    else
+        h=$((s / 3600)); m=$((s % 3600 / 60))
+        printf -v AGE '%dh%02dm' "$h" "$m"
+    fi
+}
+
+# This instant's spinner frame, into build_lines' `spin` (bash's dynamic scoping
+# makes the caller's local visible here). Lazy on purpose: the ms clock costs a
+# fork, and a sidebar with nothing working must not pay it — so it is called
+# from inside the row loop, only when a `working` row is about to be drawn, and
+# only once per tick.
+spin_frame() {
+    local ms
+    [ -n "$spin" ] && return 0
+    ms="$(now_ms)"
+    spin="${SPIN_FRAMES[$(( (ms / SPIN_MS) % SPIN_N ))]}"
 }
 
 # One dim summary line: " <icon> <text>", truncated to width with the icon kept.
@@ -415,6 +503,7 @@ interruptible_sleep() {
 build_lines() {
     LINES=(); ROW_WIN=()
     local collapsed="$COLLAPSED" width="$WIDTH" i fmt flags icon now_s telapsed tlive tic
+    local spin="" agent asince aelapsed
 
     # Rule line: rebuilt only when the pane width changes.
     if [ "$width" != "$RULE_WIDTH" ]; then
@@ -437,13 +526,19 @@ build_lines() {
 
     if [ "$collapsed" = "1" ]; then
         LINES+=("")                       # line 0: leading blank
-        fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{?${FLAG_OPTION},#{${FLAG_OPTION}},0}${TAB}#{window_index}${TAB}#{window_id}"
-        while IFS="$TAB" read -r active bell activity flagidx idx wid; do
+        # The agent aggregate is carried here too — not for a glyph (no room)
+        # but because `attention` is a PILL COLOR, which collapsed mode can
+        # still show. `since` is deliberately absent: collapsed has no sub-lines,
+        # so nothing would read it. AGENT_FMT gates on the master switch (see
+        # its definition below the expanded format).
+        fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{?${FLAG_OPTION},#{${FLAG_OPTION}},0}${TAB}${AGENT_FMT}${TAB}#{window_index}${TAB}#{window_id}"
+        while IFS="$TAB" read -r active bell activity flagidx agent idx wid; do
             icon=""; [ "$icons_on" = "on" ] && { get_icon "$wid"; icon="$ICON"; }
             # hasnote is hardcoded 0: the collapsed strip is ~5 columns wide —
             # number + command icon already fill it, so there is no room for a
-            # note glyph. Notes are an expanded-mode affordance.
-            emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "" "" "$width" 1 "$icon" 0
+            # note glyph. Notes are an expanded-mode affordance. The spinner is
+            # empty for the same reason; only the attention pill color survives.
+            emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "" "" "$width" 1 "$icon" 0 "$agent" ""
             LINES+=("$ROW")
             ROW_WIN[$(( ${#LINES[@]} - 1 ))]="$wid"
         done < <(tmux list-windows -t "$SESSION_ID" -F "$fmt" 2>/dev/null)
@@ -466,17 +561,44 @@ build_lines() {
     # text, and tmux's ternary reads the literal value "0" as FALSE — a note of
     # "0" is set yet would show no glyph. The comparison splits on the literal
     # comma before expanding, so a comma inside the note text is safe.
-    fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_last_flag}${TAB}#{window_zoomed_flag}${TAB}#{?${FLAG_OPTION},#{${FLAG_OPTION}},0}${TAB}#{?${TIMER_STATE_OPTION},#{${TIMER_STATE_OPTION}},-}${TAB}#{?${TIMER_START_OPTION},#{${TIMER_START_OPTION}},0}${TAB}#{?${TIMER_ACC_OPTION},#{${TIMER_ACC_OPTION}},0}${TAB}#{!=:#{${NOTE_OPTION}},}${TAB}#{window_index}${TAB}#{window_id}${TAB}#{window_name}"
-    while IFS="$TAB" read -r active bell activity last zoomed flagidx tstate tstart tacc hasnote idx wid name; do
+    # The agent AGGREGATE (@sidetabs_agent) rides the same interpolation, both
+    # fields via the cheap #{?opt,…} ternary: unlike a note, the values are a
+    # closed set (working|attention|done and an epoch), so the "0" truthiness
+    # trap and the TAB-splitting hazard simply cannot arise.
+    fmt="#{window_active}${TAB}#{window_bell_flag}${TAB}#{window_activity_flag}${TAB}#{window_last_flag}${TAB}#{window_zoomed_flag}${TAB}#{?${FLAG_OPTION},#{${FLAG_OPTION}},0}${TAB}#{?${TIMER_STATE_OPTION},#{${TIMER_STATE_OPTION}},-}${TAB}#{?${TIMER_START_OPTION},#{${TIMER_START_OPTION}},0}${TAB}#{?${TIMER_ACC_OPTION},#{${TIMER_ACC_OPTION}},0}${TAB}#{!=:#{${NOTE_OPTION}},}${TAB}${AGENT_FMT}${TAB}${AGENT_SINCE_FMT}${TAB}#{window_index}${TAB}#{window_id}${TAB}#{window_name}"
+    while IFS="$TAB" read -r active bell activity last zoomed flagidx tstate tstart tacc hasnote agent asince idx wid name; do
         flags=""
         [ "$active" = "1" ] && flags="*"
         [ "$last" = "1" ] && flags="${flags}-"
         [ "$zoomed" = "1" ] && flags="${flags}Z"
         LINES+=("$RULE_LINE")                         # rule line
         icon=""; [ "$icons_on" = "on" ] && { get_icon "$wid"; icon="$ICON"; }
-        emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "$flags" "$name" "$width" 0 "$icon" "$hasnote"
+        [ "$agent" = "working" ] && spin_frame          # samples the clock once, lazily
+        emit_row "$active" "$bell" "$activity" "$flagidx" "$idx" "$flags" "$name" "$width" 0 "$icon" "$hasnote" "$agent" "$spin"
         LINES+=("$ROW")
         ROW_WIN[$(( ${#LINES[@]} - 1 ))]="$wid"       # index of the row just added
+        # Agent sub-line sits directly under its row (the timer line keeps its
+        # place after it, so a window can show both). `done` gets no sub-line —
+        # the check glyph on the row says everything, and a "done · 3h" line
+        # would linger as clutter until the next visit.
+        case "$agent" in
+            working|attention)
+                # "0" is the format's default for an UNSET since, and it is also
+                # what a half-written aggregate looks like (two set-options are
+                # two round-trips). Treating it as an epoch dated the row from
+                # 1970 — "working · 496118h51m" — so it means "unknown", same as
+                # empty or garbage.
+                case "$asince" in ''|*[!0-9]*|0) asince="$now_s" ;; esac
+                aelapsed=$((now_s - asince)); [ "$aelapsed" -lt 0 ] && aelapsed=0
+                fmt_age "$aelapsed"
+                if [ "$agent" = "working" ]; then
+                    emit_summary_icon "$spin" "working · $AGE" "$width" head
+                else
+                    emit_summary_icon "$AGENT_WAIT_ICON" "waiting for you · $AGE" "$width" head
+                fi
+                LINES+=("$ROW")
+                ;;
+        esac
         if [ "$tstate" = "run" ] || [ "$tstate" = "pause" ] || [ "$tstate" = "hold" ]; then
             case "$tacc" in ''|*[!0-9]*) tacc=0 ;; esac
             telapsed="$tacc"

@@ -22,6 +22,11 @@ register_hooks() {
         "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
     tmux set-hook -g 'session-window-changed[1]' \
         "run-shell -b '$SCRIPTS_DIR/timer_focus.sh'"
+    # Visiting a tab consumes its agent "done"/"attention" signal (bell
+    # semantics). #{window_id} is safe to interpolate through run-shell's sh:
+    # window ids are "@N", unlike session ids ("$N", which sh would expand).
+    tmux set-hook -g 'session-window-changed[2]' \
+        "run-shell -b '$SCRIPTS_DIR/agent_status.sh visited #{window_id}'"
     # Focus engine also needs client transitions (attach/detach/session switch).
     tmux set-hook -g 'client-session-changed[0]' "run-shell -b '$SCRIPTS_DIR/timer_focus.sh'"
     tmux set-hook -g 'client-attached[0]'        "run-shell -b '$SCRIPTS_DIR/timer_focus.sh'"
@@ -36,8 +41,14 @@ register_hooks() {
         "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
     tmux set-hook -g window-unlinked \
         "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
-    tmux set-hook -g pane-focus-in \
+    tmux set-hook -g 'pane-focus-in[0]' \
         "run-shell -b '$SCRIPTS_DIR/refresh.sh'"
+    # Moving between panes of the window you are ALREADY on is also "you
+    # looked", so it consumes the agent signal too — session-window-changed only
+    # fires on a window CHANGE. (This hook only fires at all when focus-events
+    # is on; the raise-time check in agent_status.sh is what covers the rest.)
+    tmux set-hook -g 'pane-focus-in[1]' \
+        "run-shell -b '$SCRIPTS_DIR/agent_status.sh visited #{window_id}'"
     tmux set-hook -g alert-activity \
         "run-shell -b '$SCRIPTS_DIR/refresh.sh'"
     # Recreate a sidetab if it disappears (manual kill) or if a too-narrow

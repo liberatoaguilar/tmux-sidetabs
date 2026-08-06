@@ -58,6 +58,31 @@ TIMER_START_OPTION="@sidetabs_timer_start"  # epoch seconds when the running int
 TIMER_ACC_OPTION="@sidetabs_timer_acc"      # accumulated seconds from completed intervals
 NOTE_OPTION="@sidetabs_note"                # free-text note; presence shows a glyph on the row
 
+# Agent status. Coding agents (Claude Code, codex, opencode) call
+# scripts/agent_status.sh from their tool hooks to mark the PANE they run in
+# working | attention | done; the per-window AGGREGATE (worst state wins) is
+# what render interpolates, so a two-pane window shows one honest signal.
+#
+# The pane options deliberately do NOT reuse the window option's name: in a
+# `list-windows -F` format tmux resolves #{@opt} starting at the window's ACTIVE
+# PANE, so a same-named pane option SHADOWS the window aggregate (verified on
+# tmux 3.6) and the row would show the active pane's state instead of the
+# aggregate. Distinct names are the only way to read the aggregate for free.
+AGENT_OPTION="@sidetabs_agent"                        # window aggregate: working|attention|done
+AGENT_SINCE_OPTION="@sidetabs_agent_since"            # epoch secs the aggregate state began
+AGENT_PANE_OPTION="@sidetabs_agent_pane"              # per-pane truth (same closed set)
+AGENT_PANE_SINCE_OPTION="@sidetabs_agent_pane_since"  # epoch secs that pane ENTERED its state
+# A pane holds ONE state, so `attention` (a permission prompt mid-turn)
+# overwrites `working`. These remember what it displaced, so consuming the
+# attention on a visit puts `working` back — with its original clock — instead
+# of leaving the tab blank for the rest of the turn.
+AGENT_PANE_PREV_OPTION="@sidetabs_agent_pane_prev"
+AGENT_PANE_PREV_SINCE_OPTION="@sidetabs_agent_pane_prev_since"
+# Master switch, read by agent_status.sh (write path) AND by render.sh, which
+# interpolates it into the same list-windows format it already runs — gating
+# only writes would let "off" freeze whatever row was on screen at the time.
+AGENT_STATUS_OPTION="@sidetabs-agent-status"
+
 # Flag/timer defaults (overridable via user options)
 # Palette order is API: the window option stores a 1-based INDEX, so slots 1-4
 # must keep their original colors or existing flags silently recolor. New colors
@@ -85,3 +110,14 @@ DEFAULT_NOTE_KEY="M-n"
 DEFAULT_NOTE_ICON=$'\xef\x89\x89'   # U+F249 nerd-font sticky-note
 DEFAULT_NOTE_STORE="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/notes.tsv"
 NOTE_MAX_CHARS="200"
+
+# Agent status master switch (@sidetabs-agent-status). "off" makes every
+# signal-RAISING call a no-op in one branch, before any tmux write, and makes
+# render ignore any state already stored — the hooks stay installed in the
+# agent's own config, they just stop costing anything. The clearing paths
+# (clear/visited/reconcile) deliberately keep running while off, so a state that
+# was live when the switch flipped can never get stuck.
+DEFAULT_AGENT_STATUS="on"
+# Done check glyph fg (@sidetabs-agent-done-fg). Nord green; the only agent
+# state that adds COLOR to the row's foreground rather than recoloring the pill.
+DEFAULT_AGENT_DONE_FG="#a3be8c"
