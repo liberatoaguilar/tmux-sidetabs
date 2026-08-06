@@ -41,11 +41,17 @@ w1="$(tmux -L "$SOCKET" list-windows -t main -F '#{window_id}' | sed -n 2p)"
 [ "$(count_marked "$w1")" = "0" ] || fail "restoring flag ignored: sidetab created during restore"
 pass "restoring flag suppresses creation"
 
-# 3. Stage resurrect's leftover: an unmarked full-height left strip in w1.
-tmux -L "$SOCKET" split-window -hbfd -l 20 -t "$w1" 'sh -c "while :; do sleep 1; done"'
+# 3. Stage resurrect's leftover: an unmarked full-height left strip in w1, and
+#    leave focus ON the strips (resurrect restores the saved active pane, which
+#    is usually the sidebar — that's how sidebar navigation leaves it).
+strip1="$(tmux -L "$SOCKET" split-window -hbf -l 20 -t "$w1" -P -F '#{pane_id}' \
+  'sh -c "while :; do sleep 1; done"')"
 sleep 0.2
 [ "$(count_strips "$w1")" -ge 1 ] || fail "could not stage a dead strip"
-pass "staged a dead strip in w1"
+tmux -L "$SOCKET" select-pane -t "$strip1"
+sb0="$(tmux -L "$SOCKET" list-panes -t "$w0" -F '#{pane_id} #{@is_sidetab}' | awk '$2==1{print $1}')"
+tmux -L "$SOCKET" select-pane -t "$sb0"
+pass "staged a dead strip in w1 (focus parked on both strips)"
 
 # 4. Run the post-restore hook the way resurrect does: in-server via run-shell,
 #    so the script's bare `tmux` calls target THIS test server (not the default
@@ -65,5 +71,13 @@ for w in $(tmux -L "$SOCKET" list-windows -a -F '#{window_id}'); do
   [ "$s" = "0" ] || fail "window $w still has $s dead strip(s)"
 done
 pass "post-restore: exactly one sidetab per window, no dead strips"
+
+# 7. Focus correction: no window may be left with its ACTIVE pane on the
+#    sidebar — the user should land in a content pane after a restore.
+for w in $(tmux -L "$SOCKET" list-windows -a -F '#{window_id}'); do
+  act_sb="$(tmux -L "$SOCKET" list-panes -t "$w" -F '#{pane_active} #{@is_sidetab}' | awk '$1==1{print $2}')"
+  [ "$act_sb" != "1" ] || fail "window $w still has the sidebar as its active pane"
+done
+pass "post-restore: focus moved off the sidebar in every window"
 
 echo "ALL RESURRECT SMOKE TESTS PASSED"

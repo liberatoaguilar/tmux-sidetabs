@@ -60,8 +60,13 @@ RENDER_CMD="$CURRENT_DIR/render.sh"
 #   -l  exact size
 #   -P  print new pane id
 #   -F  format for that print
+#   -c  benign cwd: without it the pane inherits the server's cwd (usually this
+#       plugin's dir), which then leaks everywhere pane_current_path is read —
+#       resurrect saves it as the window's base cwd, and a `split-window -c
+#       '#{pane_current_path}'` issued while the sidebar has focus opens there.
 sidetab_pane_id="$(tmux split-window -hbfd \
     -l "$width" \
+    -c "$HOME" \
     -t "$WINDOW_ID" \
     -P -F '#{pane_id}' \
     "$RENDER_CMD" 2>/dev/null || true)"

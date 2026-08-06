@@ -44,3 +44,22 @@ set_tmux_option "$RESTORING_OPTION" "0"
 tmux list-windows -a -F '#{window_id}' 2>/dev/null | while read -r wid; do
     "$CURRENT_DIR/create_sidebar.sh" "$wid" || true
 done
+
+# Land focus in a content pane. Sidebar navigation keeps the sidebar pane active,
+# so most windows are SAVED with the strip as their active pane and resurrect
+# faithfully restores that — leaving the user focused in the strip on attach
+# (and anything cwd-inheriting, like `split-window -c '#{pane_current_path}'`,
+# opening in the strip's cwd). resurrect_scrub.sh fixes new saves at the source;
+# this covers save files written before it existed.
+tmux list-windows -a -F '#{window_id}' 2>/dev/null | while read -r wid; do
+    active_is_strip="$(tmux list-panes -t "$wid" -F '#{pane_active} #{@is_sidetab}' 2>/dev/null \
+        | awk '$1 == 1 { print $2 }')"
+    [ "$active_is_strip" = "1" ] || continue
+    target="$(tmux list-panes -t "$wid" -F '#{pane_id} #{@is_sidetab}' 2>/dev/null \
+        | awk '$2 != "1" { print $1; exit }')"
+    [ -n "$target" ] && tmux select-pane -t "$target" 2>/dev/null || true
+done
+
+# Bring per-window timers back from the durable event log (window ids changed
+# across the restart, so this matches by session + window name).
+"$CURRENT_DIR/timer_restore.sh" || true

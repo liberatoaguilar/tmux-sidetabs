@@ -17,8 +17,10 @@
 # Logging is best-effort: an unwritable log never aborts a state transition.
 #
 # Bound (sidebar-focused): @sidetabs-timer-key toggle, @sidetabs-timer-menu-key menu.
-# Usage: timer.sh <toggle|cancel|reset|menu|adjust|adjust-prompt|auto-hold|auto-resume> [window_id] [arg]
-#   arg = adjust value (adjust), or client_name (menu / adjust-prompt).
+# Usage: timer.sh <toggle|cancel|reset|menu|adjust|adjust-prompt|auto-hold|auto-resume|restore-state> [window_id] [arg] [arg2]
+#   arg  = adjust value (adjust), client_name (menu / adjust-prompt), or
+#          accumulated seconds (restore-state).
+#   arg2 = state to seed, hold|pause (restore-state only).
 set -euo pipefail
 
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -28,6 +30,7 @@ source "$CURRENT_DIR/helpers.sh"
 CMD="${1:-toggle}"
 WID="${2:-$(tmux display-message -p '#{window_id}')}"
 ARG="${3:-}"
+ARG2="${4:-}"
 [ -z "$WID" ] && exit 0
 TAB="$(printf '\t')"
 
@@ -103,7 +106,7 @@ case "$CMD" in
     auto-hold|auto-resume)
         lock_win || { touch "${ENGINE_LOCK}.rerun" 2>/dev/null || true; exit 0; }
         ;;
-    toggle|cancel|reset|adjust)
+    toggle|cancel|reset|adjust|restore-state)
         lock_win || true
         ;;
 esac
@@ -203,6 +206,18 @@ adjust-prompt)
         tmux command-prompt -p 'adjust (+15m / -90 / 1:30:00 sets):' \
             "run-shell \"$CURRENT_DIR/timer.sh adjust $WID '%%'\""
     fi
+    ;;
+restore-state)
+    # Post-restore re-seed (timer_restore.sh): only ever fills a blank slate —
+    # any live state wins. Seeds acc + a resumable state, never a live interval;
+    # the focus engine turns hold -> run when the window has focus.
+    [ -n "$state" ] && exit 0
+    case "$ARG" in ''|*[!0-9]*) exit 0 ;; esac
+    [ "$ARG" -gt 0 ] || exit 0
+    case "$ARG2" in hold|pause) ;; *) exit 0 ;; esac
+    set_window_option "$WID" "$TIMER_ACC_OPTION" "$ARG"
+    set_window_option "$WID" "$TIMER_STATE_OPTION" "$ARG2"
+    log_event restore - 0 "$ARG"
     ;;
 menu)
     if [ -n "$ARG" ]; then

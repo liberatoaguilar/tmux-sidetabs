@@ -73,4 +73,5 @@ DEFAULT_FLAG_PICKER_KEY="M-c"
 DEFAULT_TIMER_KEY="C-t"
 DEFAULT_TIMER_MENU_KEY="M-t"
 DEFAULT_TIMER_AUTOFOCUS="on"   # auto pause/resume timers on tab focus
+DEFAULT_TIMER_RESTORE="on"     # re-seed timers from the event log after a restore
 DEFAULT_TIMER_LOG="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/timelog.tsv"

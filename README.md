@@ -109,7 +109,8 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-timer-key` | `C-t` | Key to start / pause the current window's timer |
 | `@sidetabs-timer-menu-key` | `M-t` | Key to open the timer menu (adjust total, cancel current interval, or reset) |
 | `@sidetabs-timer-autofocus` | `on` | `off` to disable auto pause/resume when window loses/gains focus |
-| `@sidetabs-timer-log` | `~/.local/share/tmux-sidetabs/timelog.tsv` | Path to the timer event log (TSV: timestamp, event type, interval start, interval duration, total, session, window, window_id, cwd; events are `start` / `resume` / `pause` / `auto-pause` / `auto-resume` / `adjust` / `cancel` / `reset`) |
+| `@sidetabs-timer-restore` | `on` | `off` to disable re-seeding timers from the event log after a tmux-resurrect restore |
+| `@sidetabs-timer-log` | `~/.local/share/tmux-sidetabs/timelog.tsv` | Path to the timer event log (TSV: timestamp, event type, interval start, interval duration, total, session, window, window_id, cwd; events are `start` / `resume` / `pause` / `auto-pause` / `auto-resume` / `adjust` / `cancel` / `reset` / `restore`) |
 
 Example:
 
@@ -163,13 +164,38 @@ original `C-h` / `C-j` / `C-k` bindings.)
   menu (`M-t` → "adjust total…") to correct a forgotten timer. Adjust accepts: `+15m`,
   `-90`, `1:30:00` (hours:minutes:seconds), `10:00` (minutes:seconds), or a bare number
   for seconds; the total is clamped at 0.
-- Flag colors and timer state are session-only (not saved by tmux-resurrect). The
-  timer log TSV file is the durable record; the per-window state is discarded when
-  the session ends.
+- **Timers survive restarts** (with tmux-resurrect/continuum): live state is
+  session-only, but the post-restore hook replays the timer log — the durable
+  record — and re-seeds each window's total, matching windows by session +
+  window *name* (ids change across restarts; renamed windows don't match, and
+  with duplicate names only the lowest-indexed window is seeded). A timer that
+  was running comes back auto-held and resumes when its window regains focus; a
+  manual pause comes back paused; a reset timer stays gone. Each re-seed logs a
+  `restore` event. Seconds between the last logged event and the server dying
+  are not recoverable. Disable with `@sidetabs-timer-restore off`. Flag colors
+  have no durable record and still reset with the server.
 - Killing a window with a running timer silently drops the unlogged in-flight interval —
   if timing a long task, pause first to ensure it's logged.
 - Timers use wall-clock time: laptop sleep counts toward elapsed time. The timer
   continues even when the sidebar is collapsed.
+
+## tmux-resurrect integration
+
+Add all three hooks to `.tmux.conf` (paths to your clone):
+
+```tmux
+set-option -g @resurrect-hook-pre-restore-all  'bash <plugin>/scripts/resurrect_pre.sh'
+set-option -g @resurrect-hook-post-restore-all 'bash <plugin>/scripts/resurrect_post.sh'
+set-option -g @resurrect-hook-post-save-all    'bash <plugin>/scripts/resurrect_scrub.sh'
+```
+
+pre/post suppress duplicate sidebars during a restore, adopt the restored strips
+in place, move focus off the sidebar into a content pane, and restore timers.
+The post-save scrub rewrites the sidebar strip lines inside the resurrect save
+file (cwd -> the window's first content pane's cwd; active flag -> that pane):
+without it, tmux-resurrect builds every window with `new-window -c <first
+pane's cwd>` — and the strip is always pane 0 — so every restored window's
+base shell would open in the sidebar's directory, focused on the strip.
 
 ## Tests
 
