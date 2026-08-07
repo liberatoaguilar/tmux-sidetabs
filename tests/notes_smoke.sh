@@ -278,7 +278,142 @@ while [ "$i" -le "$K" ]; do
 done
 pass "concurrent note writes for different windows keep every store row"
 
-# --- 15. Uninstall removes the binding --------------------------------------
+# --- 15. Multi-line notes round-trip through the editor ---------------------
+# The STORED form must stay single-line (the render format and the TSV store
+# both depend on it), but reopening the popup has to seed the editor with the
+# original multi-line text — newlines are escape-encoded, not flattened.
+CAP="$WORK/captured.txt"
+ED_CAPTURE="$WORK/ed_capture.sh"
+cat > "$ED_CAPTURE" <<EOF
+#!/usr/bin/env bash
+cp "\$1" "$CAP"
+EOF
+ED_MULTI="$WORK/ed_multi.sh"
+cat > "$ED_MULTI" <<'EOF'
+#!/usr/bin/env bash
+printf 'line1\n\nline3\n' > "$1"
+EOF
+chmod +x "$ED_CAPTURE" "$ED_MULTI"
+
+tmux -L "$SOCKET" new-window -n multi; sleep 0.4
+wm="$(tmux -L "$SOCKET" list-windows -t main -F '#{window_name} #{window_id}' | awk '$1=="multi"{print $2}')"
+[ -n "$wm" ] || fail "setup: multi window missing"
+
+run "EDITOR=$ED_MULTI $PLUGIN_DIR/scripts/note.sh edit-popup $wm"
+sleep 0.4
+got="$(winopt "$wm" @sidetabs_note)"
+[ "$got" = 'line1\n\nline3' ] || fail "multi-line note not escape-encoded: '$got'"
+nlines="$(tmux -L "$SOCKET" show-option -w -t "$wm" -qv @sidetabs_note | wc -l | tr -d ' ')"
+[ "$nlines" = "1" ] || fail "@sidetabs_note value is not single-line ($nlines lines)"
+nf="$(awk -F'\t' 'NF{print NF}' "$STORE" | sort -u)"
+[ "$nf" = "3" ] || fail "store rows are not all 3 TSV fields after a multi-line note: $nf"
+[ "$(awk -F'\t' '$2=="multi"{n++} END{print n+0}' "$STORE")" = "1" ] \
+  || fail "expected exactly 1 store row for 'multi', got $(awk -F'\t' '$2=="multi"{n++} END{print n+0}' "$STORE")"
+grep -F 'line1\n\nline3' "$STORE" >/dev/null || fail "store row not escape-encoded: $(grep multi "$STORE" || true)"
+
+rm -f "$CAP"
+run "EDITOR=$ED_CAPTURE $PLUGIN_DIR/scripts/note.sh edit-popup $wm"
+sleep 0.4
+[ -f "$CAP" ] || fail "capture editor never ran"
+[ "$(cat "$CAP")" = "$(printf 'line1\n\nline3')" ] \
+  || fail "editor not seeded with the multi-line note: [$(cat "$CAP")]"
+[ "$(winopt "$wm" @sidetabs_note)" = 'line1\n\nline3' ] \
+  || fail "re-saving the seeded buffer changed the note: '$(winopt "$wm" @sidetabs_note)'"
+pass "multi-line notes round-trip through the editor; stored form stays single-line"
+
+# --- 16. A literal backslash-n stays literal --------------------------------
+# Naive decoding ("\\n" -> newline) corrupts an escaped backslash. The 4 chars
+# a \ n b must come back as those 4 chars, never as a newline.
+ED_BS="$WORK/ed_backslash.sh"
+cat > "$ED_BS" <<'EOF'
+#!/usr/bin/env bash
+printf 'a\\nb\n' > "$1"
+EOF
+chmod +x "$ED_BS"
+tmux -L "$SOCKET" new-window -n bslash; sleep 0.4
+wb="$(tmux -L "$SOCKET" list-windows -t main -F '#{window_name} #{window_id}' | awk '$1=="bslash"{print $2}')"
+[ -n "$wb" ] || fail "setup: bslash window missing"
+
+run "EDITOR=$ED_BS $PLUGIN_DIR/scripts/note.sh edit-popup $wb"
+sleep 0.4
+got="$(winopt "$wb" @sidetabs_note)"
+[ "$got" = 'a\\nb' ] || fail "literal backslash not doubled on store: '$got'"
+rm -f "$CAP"
+run "EDITOR=$ED_CAPTURE $PLUGIN_DIR/scripts/note.sh edit-popup $wb"
+sleep 0.4
+back="$(cat "$CAP")"
+[ "$back" = 'a\nb' ] || fail "literal 'a\\nb' did not round-trip: [$back]"
+[ "${#back}" = "4" ] || fail "literal 'a\\nb' decoded to ${#back} chars (a newline crept in)"
+[ "$(winopt "$wb" @sidetabs_note)" = 'a\\nb' ] || fail "re-saving changed the escaped note"
+pass "a literal backslash-n survives the encode/decode round-trip"
+
+# --- 17. restore re-seeds the ENCODED form; the editor still decodes it ------
+tmux -L "$SOCKET" set-option -w -t "$wm" -qu @sidetabs_note
+[ -z "$(winopt "$wm" @sidetabs_note)" ] || fail "setup: could not wipe the note option"
+run "$PLUGIN_DIR/scripts/note.sh restore"
+sleep 0.5
+[ "$(winopt "$wm" @sidetabs_note)" = 'line1\n\nline3' ] \
+  || fail "restore did not re-seed the encoded note: '$(winopt "$wm" @sidetabs_note)'"
+rm -f "$CAP"
+run "EDITOR=$ED_CAPTURE $PLUGIN_DIR/scripts/note.sh edit-popup $wm"
+sleep 0.4
+[ "$(cat "$CAP")" = "$(printf 'line1\n\nline3')" ] \
+  || fail "editor not seeded correctly after restore: [$(cat "$CAP")]"
+pass "restore re-seeds the encoded note; the editor still sees multi-line text"
+
+# --- 18. Per-line sanitizing + blank-line squeeze ---------------------------
+# Control chars still die, space/tab runs still collapse and ends still trim —
+# but per LINE now. Leading/trailing blank lines go; 2+ blank lines in a row
+# become one, so paragraph breaks survive.
+ED_DIRTY="$WORK/ed_dirty.sh"
+cat > "$ED_DIRTY" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' $'\n\n  first\tsecond\x01third   fourth  \n\n  keep  \n\n\n\ntail\n\n\n' > "$1"
+EOF
+chmod +x "$ED_DIRTY"
+tmux -L "$SOCKET" new-window -n dirty; sleep 0.4
+wdy="$(tmux -L "$SOCKET" list-windows -t main -F '#{window_name} #{window_id}' | awk '$1=="dirty"{print $2}')"
+[ -n "$wdy" ] || fail "setup: dirty window missing"
+run "EDITOR=$ED_DIRTY $PLUGIN_DIR/scripts/note.sh edit-popup $wdy"
+sleep 0.4
+got="$(winopt "$wdy" @sidetabs_note)"
+[ "$got" = 'first secondthird fourth\n\nkeep\n\ntail' ] || fail "per-line sanitize: got '$got'"
+rm -f "$CAP"
+run "EDITOR=$ED_CAPTURE $PLUGIN_DIR/scripts/note.sh edit-popup $wdy"
+sleep 0.4
+[ "$(cat "$CAP")" = "$(printf 'first secondthird fourth\n\nkeep\n\ntail')" ] \
+  || fail "sanitized multi-line buffer did not seed correctly: [$(cat "$CAP")]"
+pass "sanitizing is per-line: control chars die, space runs collapse, blank runs squeeze to one"
+
+# --- 19. The 200-char cap applies to the DECODED text -----------------------
+ED_LONG="$WORK/ed_long.sh"
+cat > "$ED_LONG" <<'EOF'
+#!/usr/bin/env bash
+{ printf 'a%.0s' $(seq 150); printf '\n'; printf 'b%.0s' $(seq 150); printf '\n'; } > "$1"
+EOF
+chmod +x "$ED_LONG"
+tmux -L "$SOCKET" new-window -n capped; sleep 0.4
+wc1="$(tmux -L "$SOCKET" list-windows -t main -F '#{window_name} #{window_id}' | awk '$1=="capped"{print $2}')"
+[ -n "$wc1" ] || fail "setup: capped window missing"
+run "EDITOR=$ED_LONG $PLUGIN_DIR/scripts/note.sh edit-popup $wc1"
+sleep 0.4
+nlines="$(tmux -L "$SOCKET" show-option -w -t "$wc1" -qv @sidetabs_note | wc -l | tr -d ' ')"
+[ "$nlines" = "1" ] || fail "capped note is not single-line ($nlines lines)"
+rm -f "$CAP"
+run "EDITOR=$ED_CAPTURE $PLUGIN_DIR/scripts/note.sh edit-popup $wc1"
+sleep 0.4
+dec="$(cat "$CAP")"
+[ "${#dec}" = "200" ] || fail "decoded note not capped at 200 chars: len=${#dec}"
+[ "$(printf '%s\n' "$dec" | wc -l | tr -d ' ')" = "2" ] \
+  || fail "cap destroyed the line structure: [$dec]"
+[ "$(printf '%s\n' "$dec" | sed -n '1p' | tr -d 'a' )" = "" ] || fail "capped line 1 is not all 'a'"
+[ "$(printf '%s\n' "$dec" | sed -n '2p' | wc -c | tr -d ' ')" = "50" ] \
+  || fail "capped line 2 length wrong: [$(printf '%s\n' "$dec" | sed -n '2p')]"
+nf="$(awk -F'\t' 'NF{print NF}' "$STORE" | sort -u)"
+[ "$nf" = "3" ] || fail "store rows broke into extra fields after the capped note: $nf"
+pass "the 200-char cap applies to the decoded text; the encoded row stays 3 fields"
+
+# --- 20. Uninstall removes the binding --------------------------------------
 run "$PLUGIN_DIR/scripts/uninstall.sh"
 sleep 0.3
 if tmux -L "$SOCKET" list-keys -T root 2>/dev/null | grep -q 'note.sh'; then

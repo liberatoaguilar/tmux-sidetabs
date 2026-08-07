@@ -6,15 +6,17 @@
 #
 # The sidebar shows PRESENCE only — a sticky-note glyph on the row, expanded
 # mode only — never the text. Text is sanitized on the way in (control chars
-# stripped, spaces collapsed, capped) so it can never break the TAB-separated
-# render format or the TSV store.
+# stripped, spaces collapsed per line, capped) and newlines are ESCAPE-ENCODED
+# (\ -> \\, LF -> \n) so the stored form is always a single line that can never
+# break the TAB-separated render format or the TSV store — while the editor
+# still sees the note's real multi-line text, decoded on the way out.
 #
 # Bound (sidebar-focused): @sidetabs-note-key opens the edit popup.
 # Usage: note.sh <set|clear|edit-popup|restore> [window_id] [text...]
-#   set <wid> <text...>  sanitize + store + render (empty after sanitizing = clear)
+#   set <wid> <text...>  sanitize + encode + store + render (empty = clear)
 #   clear <wid>          unset the option and drop the store row
-#   edit-popup <wid>     $EDITOR on a temp file seeded with the current note;
-#                        on exit the whole file becomes one sanitized line
+#   edit-popup <wid>     $EDITOR on a temp file seeded with the DECODED note;
+#                        on exit the whole file is sanitized and re-encoded
 #   restore              re-seed live windows from the store (never clobbers)
 set -euo pipefail
 
@@ -28,19 +30,87 @@ US=$'\x1f'
 
 store_path() { get_tmux_option '@sidetabs-note-store' "$DEFAULT_NOTE_STORE"; }
 
-# Sanitize $1 into the global NOTE: TAB/newline/CR become spaces (so a multi-line
-# editor buffer collapses to a readable single line instead of running words
-# together), every remaining control char is dropped, runs of spaces collapse,
-# ends are trimmed, and the result is capped at NOTE_MAX_CHARS. The result is
-# guaranteed free of TAB/US/newline — the invariant both the render format and
-# the TSV store depend on.
+# encode_note <text> -> ENC. Escapes clean multi-line text into the single-line
+# STORED form: backslash first (so the newline escape it produces is not itself
+# re-escaped), then LF -> the two chars \n. The input is already free of
+# TAB/CR/other control chars, so the result is guaranteed single-line and
+# TAB-free — the invariant the render format and the TSV store depend on.
+encode_note() {
+    ENC="$1"
+    ENC="${ENC//\\/\\\\}"
+    ENC="${ENC//$'\n'/\\n}"
+}
+
+# decode_note <encoded> -> DEC. The inverse, used ONLY to seed the editor.
+# Sequential replacement would corrupt an escaped backslash (\\n is a literal
+# backslash followed by "n", not a newline), so escaped backslashes are first
+# parked on a sentinel. US (0x1f) is safe: the stored form is control-char-free
+# by construction, so it can never contain one.
+#
+# Migration: rows written before notes were encoded are stored raw and are
+# indistinguishable from encoded ones, so a legacy note containing the literal
+# two chars \n decodes to a real newline (and \\ halves to \) the first time its
+# popup opens — and saving then persists the reinterpreted text, NOT the
+# original. Accepted: at the time encoding shipped this machine's store was
+# verified empty, so no such note existed anywhere. A version tag could remove
+# the ambiguity but isn't worth it for a store with zero legacy rows.
+decode_note() {
+    DEC="$1"
+    DEC="${DEC//\\\\/$US}"
+    DEC="${DEC//\\n/$'\n'}"
+    DEC="${DEC//$US/\\}"
+}
+
+# Sanitize $1 (a raw, possibly multi-line editor buffer) into the global NOTE,
+# in the ENCODED form. Line endings are normalized to LF; then per line tabs
+# become spaces, every remaining control char is dropped, runs of spaces
+# collapse and the ends are trimmed. Leading/trailing blank lines go and runs of
+# blank lines squeeze to one, so paragraph breaks survive but the note can't be
+# padded out. The DECODED text is capped at NOTE_MAX_CHARS (the encoded form may
+# be a little longer — that is fine, it is not what the user counts).
 sanitize_note() {
-    NOTE="$(printf '%s' "$1" | tr '\011\012\015' '   ' | tr -d '\000-\037' | tr -s ' ')"
-    NOTE="${NOTE# }"; NOTE="${NOTE% }"
-    if [ "${#NOTE}" -gt "$NOTE_MAX_CHARS" ]; then
-        NOTE="${NOTE:0:$NOTE_MAX_CHARS}"
-        NOTE="${NOTE% }"
+    local raw flat line clean blank=0
+
+    raw="$1"
+    raw="${raw//$'\r\n'/$'\n'}"
+    raw="${raw//$'\r'/$'\n'}"
+
+    # Tabs -> space, drop every control char EXCEPT LF, squeeze space runs.
+    # tr -s can't cross a newline, so this is already per-line.
+    flat="$(printf '%s' "$raw" | tr '\011' ' ' | tr -d '\000-\011\013-\037' | tr -s ' ')"
+
+    clean=""
+    while IFS= read -r line; do
+        line="${line# }"; line="${line% }"
+        if [ -z "$line" ]; then
+            # Remember the gap instead of emitting it: trailing blanks then
+            # cost nothing, and a run of them still yields a single break.
+            if [ -n "$clean" ]; then blank=1; fi
+            continue
+        fi
+        if [ -z "$clean" ]; then
+            clean="$line"
+        elif [ "$blank" = "1" ]; then
+            clean="${clean}"$'\n\n'"$line"
+        else
+            clean="${clean}"$'\n'"$line"
+        fi
+        blank=0
+    done <<< "$flat"
+
+    if [ "${#clean}" -gt "$NOTE_MAX_CHARS" ]; then
+        clean="${clean:0:$NOTE_MAX_CHARS}"
+        # The cut can land on the whitespace/newlines the trimming above spared.
+        while :; do
+            case "$clean" in
+                *' '|*$'\n') clean="${clean%?}" ;;
+                *) break ;;
+            esac
+        done
     fi
+
+    encode_note "$clean"
+    NOTE="$ENC"
 }
 
 # Sets SNAME/WNAME for window $1 (empty if it is gone). Tabs are squashed the
@@ -156,7 +226,11 @@ edit-popup)
     TMPF="$(mktemp "${TMPDIR:-/tmp}/sidetabs_note.XXXXXX")" || exit 0
     trap 'rm -f "$TMPF" 2>/dev/null' EXIT INT TERM HUP
     CUR="$(get_window_option "$WID" "$NOTE_OPTION" "")"
-    [ -n "$CUR" ] && printf '%s\n' "$CUR" > "$TMPF"
+    # The option holds the encoded single line; the editor gets the real text.
+    if [ -n "$CUR" ]; then
+        decode_note "$CUR"
+        printf '%s\n' "$DEC" > "$TMPF"
+    fi
     ED="${EDITOR:-${VISUAL:-vi}}"
     # Unquoted so an EDITOR carrying flags ("code -w") still works.
     $ED "$TMPF" || true

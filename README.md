@@ -70,7 +70,7 @@ run-shell '/path/to/tmux-sidetabs/sidetabs.tmux'
 | `M-c` (in sidebar) | Open the flag color **picker**: a menu of live color swatches — press `1`-`8` to jump straight to a color, `0` to clear |
 | `C-t` (in sidebar) | Start / pause / resume the current window's stopwatch; counting pauses when the window loses focus (hourglass glyph ⏳ = auto-held, counting resumes on focus) |
 | `M-t` (in sidebar) | Open the timer menu: adjust total time, cancel current interval, or reset the timer |
-| `M-n` (in sidebar) | Edit the current window's **note** in a popup (`$EDITOR`); save an empty buffer to clear it. Windows with a note show a sticky-note glyph  |
+| `M-n` (in sidebar) | Edit the current window's **note** in a popup (`$EDITOR`); multi-line text is kept, save an empty buffer to clear it. Windows with a note show a sticky-note glyph  |
 
 `C-j` / `C-k` outside the sidebar keep their normal `select-pane -D/-U` behavior
 (and forward to vim when a vim-like process has focus). The window-management
@@ -113,7 +113,7 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-timer-restore` | `on` | `off` to disable re-seeding timers from the event log after a tmux-resurrect restore |
 | `@sidetabs-note-key` | `M-n` | Key to open the note editor popup for the current window (`none` to disable) |
 | `@sidetabs-note-icon` | (sticky note) | Glyph shown on rows that have a note. Any string works — set it to something ASCII if your font lacks Nerd Font glyphs. A multi-character icon is measured and takes its columns from the window name, so a long one leaves less room for the name |
-| `@sidetabs-note-store` | `~/.local/share/tmux-sidetabs/notes.tsv` | Path to the durable note store (TSV: session, window name, note — one row per noted window) |
+| `@sidetabs-note-store` | `~/.local/share/tmux-sidetabs/notes.tsv` | Path to the durable note store (TSV: session, window name, note — one row per noted window; newlines in the note are stored escaped as `\n`, so a row is always one line) |
 | `@sidetabs-agent-status` | `on` | `off` stops any new agent signal being raised **and** hides any that is already showing (see [Agent status](#agent-status)) — the agent-side hooks can stay installed, they just stop costing anything. Flipping it off mid-turn is safe: a row that was lit at the time goes quiet immediately, and visiting the tab still clears the stored state |
 | `@sidetabs-agent-done-fg` | `#a3be8c` | Color of the ✓ glyph on a finished agent's row (nord14) |
 | `@sidetabs-timer-log` | `~/.local/share/tmux-sidetabs/timelog.tsv` | Path to the timer event log (TSV: timestamp, event type, interval start, interval duration, total, session, window, window_id, cwd; events are `start` / `resume` / `pause` / `auto-pause` / `auto-resume` / `adjust` / `cancel` / `reset` / `restore`) |
@@ -291,9 +291,13 @@ original `C-h` / `C-j` / `C-k` bindings.)
 - Timers use wall-clock time: laptop sleep counts toward elapsed time. The timer
   continues even when the sidebar is collapsed.
 - **Notes**: `M-n` (sidebar focused) opens the current window's note in a popup
-  running your `$EDITOR`; the whole buffer is collapsed to one line, stripped of
-  control characters and capped at 200 characters. Saving an empty buffer clears
-  the note. The row shows the note's **presence** only — a sticky-note glyph
+  running your `$EDITOR`. **Multi-line notes are preserved** — reopening the
+  popup gives you the note back exactly as you wrote it. The buffer is stripped
+  of control characters, spaces collapse and trim per line, blank-line runs
+  squeeze to a single break, and the text is capped at 200 characters. Saving an
+  empty buffer clears the note. Newlines are escape-encoded (`\` → `\\`, newline
+  → `\n`) in the stored form, so the window option and the TSV store rows stay
+  single-line. The row shows the note's **presence** only — a sticky-note glyph
   after the window flags, never the text — and only in expanded mode (the
   collapsed strip has no room for it). Notes survive restarts on their own: every
   edit writes through to `@sidetabs-note-store`, and the post-restore hook
