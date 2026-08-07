@@ -221,7 +221,7 @@ emit_header() {
 # Sets ROW.
 emit_row() {
     local active="$1" bell="$2" activity="$3" flagidx="$4" idx="$5" flags="$6" name="$7" width="$8" collapsed="$9" icon="${10:-}" hasnote="${11:-0}" agent="${12:--}" spinner="${13:-}" age="${14:-}"
-    local seg cap avail nm used pad spaces icon_seg icon_w note_seg note_w stat_seg stat_w
+    local seg cap avail nm used pad spaces icon_seg icon_w note_seg note_w stat_seg stat_w sfg
     case "$flagidx" in ''|*[!0-9]*) flagidx=0 ;; esac   # unset/garbage -> no flag
     # "attention" is a bell in every way that matters — the agent is blocked on
     # YOU — so it shares the bell's treatment and its precedence (above flag
@@ -233,6 +233,13 @@ emit_row() {
     elif [ "$active" = "1" ]; then seg="$SEG_ACTIVE"; cap="$CAP_ACTIVE"
     elif [ "$activity" = "1" ]; then seg="$SEG_ACT"; cap="$CAP_ACT"
     else seg="$SEG_IDLE"; cap="$CAP_IDLE"; fi
+
+    # Spinner/elapsed color: dim summary hue on plain rows, but on a COLORED
+    # pill (active tab, flag color) that hue sinks into the background — there
+    # the indicator inherits the pill's own fg (empty override), matching the
+    # name text's contrast. SEG_ACT is idle-bg, so it keeps the dim hue.
+    sfg="$SPIN_FG"
+    if [ "$seg" != "$SEG_IDLE" ] && [ "$seg" != "$SEG_ACT" ]; then sfg=""; fi
 
     avail=$((width - 1)); [ "$avail" -lt 0 ] && avail=0
 
@@ -280,9 +287,9 @@ emit_row() {
             # bell-red pill IS its signal, text would be redundant.
             if [ -n "$spinner" ]; then
                 if [ -n "$age" ]; then
-                    stat_seg=" ${SPIN_FG}${spinner} ${age}${seg}"; stat_w=$((3 + ${#age}))
+                    stat_seg=" ${sfg}${spinner} ${age}${seg}"; stat_w=$((3 + ${#age}))
                 else
-                    stat_seg=" ${SPIN_FG}${spinner}${seg}"; stat_w=2
+                    stat_seg=" ${sfg}${spinner}${seg}"; stat_w=2
                 fi
             fi
             ;;
@@ -322,7 +329,7 @@ emit_row() {
             # The age is the first status casualty: a squeezed row keeps the
             # spinner ("busy") and gives up the "for how long".
             used=$((used - stat_w + 2))
-            stat_seg=" ${SPIN_FG}${spinner}${seg}"; stat_w=2
+            stat_seg=" ${sfg}${spinner}${seg}"; stat_w=2
         fi
         if [ "$used" -gt "$avail" ] && [ "$stat_w" -gt 0 ]; then
             stat_seg="${stat_seg# }"; stat_w=$((stat_w - 1)); used=$((used - 1))
