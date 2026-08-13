@@ -22,8 +22,20 @@ SOCKET="sidetab_cycle_$$"
 PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 TMPLOG="${TMPDIR:-/tmp}/sidetabs_cycle_$$.tsv"
 TMPTAGS="${TMPDIR:-/tmp}/sidetabs_cycle_tags_$$.tsv"
+STMPOUT="${TMPDIR:-/tmp}/sidetabs_cycle_stmp_$$"      # server-side TMPDIR probe (section 12)
+LOCKDIR=""                                            # pre-held window lock (section 12)
 
-cleanup() { tmux -L "$SOCKET" kill-server 2>/dev/null || true; rm -f "$TMPLOG" "$TMPTAGS"; }
+# `if`, not `&&`: a failing AND-list inside an EXIT trap aborts the handler
+# under `set -e` (verified), which would strand the temp files on any failure
+# path that leaves the section-12 lock dir already released.
+cleanup() {
+    tmux -L "$SOCKET" kill-server 2>/dev/null || true
+    if [ -n "$LOCKDIR" ]; then
+        rmdir "$LOCKDIR" 2>/dev/null || true
+    fi
+    rm -f "$TMPLOG" "$TMPTAGS" "$STMPOUT"
+    return 0
+}
 trap cleanup EXIT
 
 fail() { echo "FAIL: $*"; exit 1; }
@@ -408,5 +420,68 @@ pass "ambient focus ticks deliver a due cycle reset to a window nobody touched"
 [ "$(resets_for ambientzero)" = "0" ] \
     || fail "ambientzero: ambient tick logged a reset for a reset_day 0 tag"
 pass "the same ambient ticks leave not-due and never-reset windows alone"
+
+# =============================================================================
+# 12. LOCK REFUSAL. cycle_check is the first engine op that irreversibly zeroes
+#     a total, and a user op that ran out of lock budget used to proceed
+#     UNLOCKED. It then re-read stale state/acc/start/last_reset — cycle_check
+#     writes last_reset LAST — ran its own cycle_check, and both processes
+#     folded the SAME open interval, each logging its own auto-pause + reset +
+#     resume. D1's dedup hides the duplicated interval, but the second row's
+#     stale total lands after the first `reset` zeroed the baseline, so the CLI
+#     replay recovers the difference from the total delta: 1300 billed seconds
+#     for 300 worked, with errors=[] and window options that look correct.
+#
+#     Deterministic by construction: the lock dir is held from OUTSIDE (the same
+#     mkdir primitive timer.sh uses), so no load or timing luck is needed. The
+#     lock path is computed from the SERVER's pid and TMPDIR, not this shell's —
+#     run-shell children live in the server's environment.
+#
+#     Real clock, and after section 11 by the same rule: no date faking here.
+#     Order matters — newwin, then tag_set, then the option seeds, then mkdir,
+#     with no window/session hook in between, so the ambient engine arm cannot
+#     deliver this window's due reset before the deliberate toggle does.
+# =============================================================================
+wlk="$(newwin lockwin)"
+run "$PLUGIN_DIR/scripts/tag_set.sh $wlk cust-A"          # reset_day 15
+SPID="$(tmux -L "$SOCKET" display-message -p '#{pid}')"
+tmux -L "$SOCKET" run-shell "printf '%s' \"\${TMPDIR:-/tmp}\" > $STMPOUT"
+sleep 0.3
+LOCKDIR="$(cat "$STMPOUT")/sidetabs_timerwin_${SPID}_${wlk#@}"
+
+# A running timer with 1000s banked, a 300s interval open, and a last_reset old
+# enough that a boundary reset is unambiguously due.
+tmux -L "$SOCKET" set-option -w -t "$wlk" @sidetabs_timer_acc 1000
+tmux -L "$SOCKET" set-option -w -t "$wlk" @sidetabs_timer_start "$(( $(date +%s) - 300 ))"
+tmux -L "$SOCKET" set-option -w -t "$wlk" @sidetabs_timer_state run
+tmux -L "$SOCKET" set-option -w -t "$wlk" @sidetabs_timer_last_reset 2020-01-15
+start_seed="$(winopt "$wlk" @sidetabs_timer_start)"
+rows_before="$(events_for lockwin | grep -c . || true)"
+
+mkdir "$LOCKDIR" || fail "lockwin: could not pre-hold the window lock at $LOCKDIR"
+run "$PLUGIN_DIR/scripts/timer.sh toggle $wlk"   # exhausts the budget -> must refuse
+[ "$(winopt "$wlk" @sidetabs_timer_acc)" = "1000" ] \
+    || fail "lockwin: a refused toggle rewrote acc: '$(winopt "$wlk" @sidetabs_timer_acc)'"
+[ "$(winopt "$wlk" @sidetabs_timer_state)" = "run" ] \
+    || fail "lockwin: a refused toggle changed state: '$(winopt "$wlk" @sidetabs_timer_state)'"
+[ "$(winopt "$wlk" @sidetabs_timer_start)" = "$start_seed" ] \
+    || fail "lockwin: a refused toggle moved the interval start"
+[ "$(winopt "$wlk" @sidetabs_timer_last_reset)" = "2020-01-15" ] \
+    || fail "lockwin: a refused toggle ran cycle_check and advanced last_reset"
+[ "$(events_for lockwin | grep -c . || true)" = "$rows_before" ] \
+    || fail "lockwin: a refused toggle logged rows: $(events_for lockwin | tr '\n' ',')"
+pass "a user op that cannot take the window lock refuses instead of mutating on stale reads"
+
+rmdir "$LOCKDIR"
+run "$PLUGIN_DIR/scripts/timer.sh toggle $wlk"   # same op, uncontended
+[ "$(resets_for lockwin)" = "1" ] \
+    || fail "lockwin: expected exactly 1 reset row once serialized, got $(resets_for lockwin)"
+ltail="$(events_for lockwin | tail -4 | tr '\n' ',')"
+[ "$ltail" = "auto-pause,reset,resume,pause," ] \
+    || fail "lockwin: expected the boundary fold once (auto-pause,reset,resume,pause), got: $ltail"
+banked="$(awk -F'\t' '!/^#/ && ($2=="pause" || $2=="auto-pause") && $7=="lockwin" {s+=$4} END {print s+0}' "$TMPLOG")"
+[ "$banked" -ge 300 ] && [ "$banked" -lt 600 ] \
+    || fail "lockwin: the 300s interval was billed $banked seconds (double-folded?)"
+pass "the deferred op then folds the boundary exactly once: one interval, one reset"
 
 echo "ALL TIMER CYCLE SMOKE TESTS PASSED"

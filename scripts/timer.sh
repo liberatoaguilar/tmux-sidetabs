@@ -60,7 +60,15 @@ ARG4="${6:-}"
 [ -z "$WID" ] && exit 0
 TAB="$(printf '\t')"
 
-nudge_redraw() { "$CURRENT_DIR/refresh.sh" force; }
+# A redraw is only ever REQUESTED here, never performed: refresh.sh does one
+# tmux round trip per sidetab pane (measured 0.2s at 2 panes, 2.1s at 41) and
+# mutates no timer state, so it must not run while the per-window lock is held —
+# that is what made the lock budget below unreachable. cleanup_exit releases the
+# lock and then performs the redraw once, on every exit path including the arms'
+# early `exit 0`s, and a cycle_check + subcommand pair now redraws once, not
+# twice.
+REDRAW=0
+nudge_redraw() { REDRAW=1; }
 num_or() { case "$1" in ''|*[!0-9]*) echo "$2" ;; *) echo "$1" ;; esac; }
 
 # log_event <event> <interval_start_epoch|-> <interval_s> <total_s>
@@ -230,10 +238,32 @@ cycle_check() {
 
 # Serialize per-window state mutations against the focus engine: an auto-hold
 # racing a C-t keypress could otherwise clobber the just-folded total and turn
-# a sticky manual pause back into an auto-resuming hold. Engine ops skip when
-# busy (a user op is mid-flight and supersedes them) but ask the engine to
-# reconcile again; user keypress ops proceed unlocked after ~250ms rather than
-# ever eating the key. State is read AFTER the lock, so it is always fresh.
+# a sticky manual pause back into an auto-resuming hold. State is read AFTER the
+# lock, so it is always fresh.
+#
+# NOTHING MUTATES UNLOCKED. A user op used to proceed unlocked once its ~250ms
+# budget ran out ("never eat the key"), and that was a silent OVERBILL: the
+# unlocked op re-read stale state/acc/start/last_reset (cycle_check writes
+# last_reset LAST, at the end of its own mutation), ran its own cycle_check, and
+# so BOTH processes folded the SAME open interval and each logged its own
+# auto-pause + reset + resume. D1's dedup absorbs the duplicated interval, but
+# the second row's stale total lands after the first `reset` zeroed the
+# baseline, so the CLI replay "recovers" the difference from the total delta —
+# reproduced end to end through read_tag_usage: 1300 billed seconds for 300
+# worked, errors=[] (both diagnostics are warnings, and the nightly push only
+# blocks on errors), and the window options left looking perfectly correct.
+# User ops now wait ~1.5s and then REFUSE, with a visible message and a rerun
+# marker so the engine reconciles once more. A key can be delayed, and in the
+# pathological case visibly dropped; both beat a 4x overbill nobody can see.
+#
+# Engine ops keep the short ~250ms budget: they bail cleanly (a user op is
+# mid-flight and supersedes them) and the rerun marker brings them straight
+# back.
+#
+# The lock covers MUTATION ONLY — refresh.sh is deferred to cleanup_exit, which
+# releases the lock before running it. Held now: the fixed mutation window,
+# measured 0.14-0.20s idle and 0.86s worst case under heavy CPU load, and it no
+# longer grows with the number of sidetab panes.
 #
 # NEVER hold this lock across a BLOCKING tmux call. `menu` is deliberately
 # absent from both arms below for exactly that reason: `tmux display-menu`
@@ -248,27 +278,53 @@ cycle_check() {
 # menu arm only READS the tag, it is excluded from the cycle_check dispatch
 # below, and every mutating action it offers (cancel/reset/adjust/assign) is a
 # fresh timer.sh invocation that takes this lock itself. If the menu arm is ever
-# made to mutate state, take the lock and RELEASE it (rmdir + clear the trap)
-# BEFORE display-menu — do not re-add `menu` here.
+# made to mutate state, take the lock and RELEASE it (unlock_win) BEFORE
+# display-menu — do not re-add `menu` here.
 SERVER_PID="$(tmux display-message -p '#{pid}' 2>/dev/null)"
 ENGINE_LOCK="${TMPDIR:-/tmp}/sidetabs_timerfocus_${SERVER_PID}"
+LOCKW=""
+# lock_win <tries>: one mkdir attempt every 50ms, so tries*50ms is the budget.
 lock_win() {
-    LOCKW="${TMPDIR:-/tmp}/sidetabs_timerwin_${SERVER_PID}_${WID#@}"
-    local i=0
-    while ! mkdir "$LOCKW" 2>/dev/null; do
+    local tries="$1" path i=0
+    path="${TMPDIR:-/tmp}/sidetabs_timerwin_${SERVER_PID}_${WID#@}"
+    while ! mkdir "$path" 2>/dev/null; do
         i=$((i + 1))
-        [ "$i" -ge 5 ] && return 1
+        [ "$i" -ge "$tries" ] && return 1
         sleep 0.05
     done
-    trap 'rmdir "$LOCKW" 2>/dev/null' EXIT
+    LOCKW="$path"
     return 0
 }
+unlock_win() {
+    [ -n "$LOCKW" ] || return 0
+    rmdir "$LOCKW" 2>/dev/null || true
+    LOCKW=""
+    return 0
+}
+# One exit path for every branch, early `exit 0`s and `set -e` aborts included:
+# release the lock FIRST, then perform the redraw the run asked for. Ordering is
+# the point — refresh.sh outside the lock is what keeps the hold bounded by the
+# mutation window.
+cleanup_exit() {
+    unlock_win
+    if [ "$REDRAW" = "1" ]; then
+        "$CURRENT_DIR/refresh.sh" force || true
+    fi
+    return 0
+}
+trap cleanup_exit EXIT
 case "$CMD" in
     auto-hold|auto-resume|cycle-check)
-        lock_win || { touch "${ENGINE_LOCK}.rerun" 2>/dev/null || true; exit 0; }
+        lock_win 5 || { touch "${ENGINE_LOCK}.rerun" 2>/dev/null || true; exit 0; }
         ;;
     toggle|cancel|reset|adjust|restore-state|retag)
-        lock_win || true
+        # ~1.5s, roughly 1.7x the worst measured hold. On exhaustion the op is
+        # REFUSED: mutating on stale reads is the overbill documented above.
+        lock_win 30 || {
+            tmux display-message "sidetabs: timer busy, try again" 2>/dev/null || true
+            touch "${ENGINE_LOCK}.rerun" 2>/dev/null || true
+            exit 0
+        }
         ;;
 esac
 
