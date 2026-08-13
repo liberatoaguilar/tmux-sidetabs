@@ -115,10 +115,17 @@ DEFAULT_TIMER_TAGS_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/tags
 # writes through to a TSV store keyed by (session name, window name), which
 # note.sh restore replays after a server restart. The row glyph is presence-only
 # — the text itself is never interpolated into a render format.
+#
+# The option and the store hold a note ID; the TEXT lives in its own file under
+# "${store}.d/<id>". That indirection is what makes a note UNBOUNDED: tmux
+# refuses any command over ~16KB ("command too long", measured in BYTES, so a
+# CJK note hits it three times sooner), which capped a note kept in the option
+# no matter how the cap was tuned. An id is ~11 characters, so the ceiling is
+# gone. `note.sh gc` sweeps note files no store row and no live window
+# references.
 DEFAULT_NOTE_KEY="M-n"
 DEFAULT_NOTE_ICON=$'\xef\x89\x89'   # U+F249 nerd-font sticky-note
 DEFAULT_NOTE_STORE="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/notes.tsv"
-NOTE_MAX_CHARS="200"
 
 # Agent status master switch (@sidetabs-agent-status). "off" makes every
 # signal-RAISING call a no-op in one branch, before any tmux write, and makes
