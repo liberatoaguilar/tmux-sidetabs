@@ -178,4 +178,57 @@ run "SIDETABS_TIMER_TODAY=2026-08-20 '$PLUGIN_DIR/scripts/timer.sh' toggle $wsee
     || fail "seedwin: a same-day re-interaction logged another reset ($before -> $(resets_for seedwin))"
 pass "same-day idempotence: no additional reset row"
 
+# =============================================================================
+# 9. Boundary crossing on a HELD window (auto-paused because unfocused). This
+#    is the dominant case — every tagged window except the focused one is in
+#    `hold` at any instant, and boundaries are normally crossed overnight — and
+#    a held timer is LIVE, not stopped: the focus engine puts it straight back
+#    to run. So the reset must keep the slot alive exactly like the running
+#    case (D7), differing only in that there is no open interval to close.
+#    Treating hold as stopped unset all three options and blanked cycle_check's
+#    `state` global, so the auto-resume that triggered the check aborted on its
+#    own `[ "$state" = "hold" ]` guard and the window silently stopped tracking
+#    for the whole new cycle — zero rows, hence nothing for C9/D5's untagged
+#    abort to catch, hence a plausible-looking zero in the nightly push.
+#    Fixture per section 7: seed last_reset through the cycle-check seam, then
+#    write the live state directly, so the dated cycle-check below is the first
+#    real interaction this window ever sees.
+# =============================================================================
+wheld="$(newwin heldwin)"
+tmux -L "$SOCKET" select-window -t "$away"    # a held window is UNFOCUSED by definition
+sleep 0.4
+run "$PLUGIN_DIR/scripts/tag_set.sh $wheld cust-A"    # reset_day 15
+run "SIDETABS_TIMER_TODAY=2026-07-20 '$PLUGIN_DIR/scripts/timer.sh' cycle-check $wheld"   # seeds 2026-07-15
+[ "$(winopt "$wheld" @sidetabs_timer_last_reset)" = "2026-07-15" ] \
+    || fail "heldwin: seeding failed: '$(winopt "$wheld" @sidetabs_timer_last_reset)'"
+tmux -L "$SOCKET" set-option -w -t "$wheld" @sidetabs_timer_state hold
+tmux -L "$SOCKET" set-option -w -t "$wheld" @sidetabs_timer_acc 1800
+
+run "SIDETABS_TIMER_TODAY=2026-08-20 '$PLUGIN_DIR/scripts/timer.sh' cycle-check $wheld"
+[ "$(winopt "$wheld" @sidetabs_timer_state)" = "hold" ] \
+    || fail "heldwin: boundary reset dropped the held timer: state '$(winopt "$wheld" @sidetabs_timer_state)'"
+[ "$(winopt "$wheld" @sidetabs_timer_acc)" = "0" ] \
+    || fail "heldwin: acc not zeroed: '$(winopt "$wheld" @sidetabs_timer_acc)'"
+[ -z "$(winopt "$wheld" @sidetabs_timer_start)" ] \
+    || fail "heldwin: a held timer must have no live interval start"
+[ "$(winopt "$wheld" @sidetabs_timer_last_reset)" = "2026-08-15" ] \
+    || fail "heldwin: last_reset not advanced: '$(winopt "$wheld" @sidetabs_timer_last_reset)'"
+[ "$(resets_for heldwin)" = "1" ] || fail "heldwin: expected exactly 1 reset row, got $(resets_for heldwin)"
+htail="$(events_for heldwin | tail -2 | tr '\n' ',')"
+[ "$htail" = "reset,auto-pause," ] \
+    || fail "heldwin: expected the last two events to be reset,auto-pause (D7), got: $htail"
+pass "boundary crossing while held: reset + re-establishing row, acc 0, still held"
+
+# The whole point of staying in `hold`: the next focus tick resumes it into the
+# new cycle instead of finding a window with no timer at all.
+run "$PLUGIN_DIR/scripts/timer.sh auto-resume $wheld"
+[ "$(winopt "$wheld" @sidetabs_timer_state)" = "run" ] \
+    || fail "heldwin: auto-resume after the boundary reset did not resume: '$(winopt "$wheld" @sidetabs_timer_state)'"
+[ -n "$(winopt "$wheld" @sidetabs_timer_start)" ] || fail "heldwin: resumed without a live interval start"
+[ "$(events_for heldwin | tail -1)" = "auto-resume" ] \
+    || fail "heldwin: no auto-resume row after the boundary reset: $(events_for heldwin | tail -1)"
+[ "$(resets_for heldwin)" = "1" ] || fail "heldwin: auto-resume logged another reset"
+pass "a held window that crossed a boundary still auto-resumes into the new cycle"
+run "$PLUGIN_DIR/scripts/timer.sh toggle $wheld"   # leave nothing running behind us
+
 echo "ALL TIMER CYCLE SMOKE TESTS PASSED"

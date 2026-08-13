@@ -125,7 +125,7 @@ fold_interval() {
 # Reads and updates the state/now/acc globals, so the subcommand that follows
 # sees the post-reset world.
 cycle_check() {
-    local tag cs last re was_run
+    local tag cs last re was_run was_hold
     tag="$(get_window_option "$WID" "$TIMER_TAG_OPTION" "")"
     [ -n "$tag" ] && [ "$tag" != "-" ] || return 0
     cs="$(cycle_start "$(tag_reset_day "$tag")")"   # empty = never auto-reset
@@ -156,7 +156,24 @@ cycle_check() {
         return 0
     fi
 
-    was_run=0; [ "$state" = "run" ] && was_run=1
+    # `run` and `hold` are both LIVE timers — hold only means the window is
+    # unfocused right now, and the focus engine puts it straight back to run.
+    # They differ in exactly one respect: only `run` has an open interval to
+    # close. Treating hold as stopped (the pre-fix `was_run` alone) unset its
+    # three options and blanked the `state` global, so the very call that
+    # triggered this check (auto-resume / auto-hold) then aborted on its own
+    # `[ "$state" = ... ] || exit 0` and the window silently stopped tracking
+    # for the rest of the cycle — with no untagged time for C9/D5's abort to
+    # catch, i.e. a plausible-looking zero in the nightly push. Every tagged
+    # window except the focused one is in hold at any instant, and boundaries
+    # are usually crossed overnight, so that was the DOMINANT case.
+    # A sticky `pause` deliberately keeps the else branch: it accrues nothing,
+    # and zeroing it matches the user-invoked `reset` arm below.
+    was_run=0; was_hold=0
+    case "$state" in
+        run)  was_run=1 ;;
+        hold) was_hold=1 ;;
+    esac
     if [ "$was_run" = "1" ]; then
         # Close the open interval as its own row FIRST. Replay attributes
         # seconds on closing events only and treats `reset` as a boundary
@@ -175,6 +192,18 @@ cycle_check() {
         set_window_option "$WID" "$TIMER_START_OPTION" "$now"
         set_window_option "$WID" "$TIMER_STATE_OPTION" "run"
         log_event resume - 0 0
+    elif [ "$was_hold" = "1" ]; then
+        # Same D7 pair for the auto-paused case, minus the interval: stay in
+        # hold (the `state` global is left alone on purpose — the auto-resume
+        # arm below reads it after this returns) so refocusing resumes
+        # normally. The companion row is an `auto-pause`, which is what the
+        # restore replay maps back to hold; it carries a real interval start
+        # with a zero-length interval, so it re-establishes the slot without
+        # contributing any billable seconds.
+        set_window_option "$WID" "$TIMER_ACC_OPTION" 0
+        set_window_option "$WID" "$TIMER_STATE_OPTION" "hold"
+        unset_window_option "$WID" "$TIMER_START_OPTION"   # hold has none; idempotent
+        log_event auto-pause "$now" 0 0
     else
         state=""
         unset_window_option "$WID" "$TIMER_STATE_OPTION"
