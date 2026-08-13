@@ -326,9 +326,17 @@ restore-state)
     # Post-restore re-seed (timer_restore.sh): only ever fills a blank slate —
     # any live state wins. Seeds acc + a resumable state, never a live interval;
     # the focus engine turns hold -> run when the window has focus.
+    #
+    # A total of ZERO is a legitimate slot, not "nothing to restore": that is
+    # exactly what D7's post-boundary `reset` + re-establishing row leave
+    # behind, and refusing it here (the old `-gt 0`) dropped the state, tag and
+    # last_reset of every window that crossed a billing boundary shortly before
+    # the server died — while the abandoned open interval stayed in the log to
+    # be billed. `-ge 0` with the numeric check above still rejects garbage;
+    # timer_restore.sh's replay is what decides a slot exists at all.
     [ -n "$state" ] && exit 0
     case "$ARG" in ''|*[!0-9]*) exit 0 ;; esac
-    [ "$ARG" -gt 0 ] || exit 0
+    [ "$ARG" -ge 0 ] || exit 0
     case "$ARG2" in hold|pause) ;; *) exit 0 ;; esac
     set_window_option "$WID" "$TIMER_ACC_OPTION" "$ARG"
     set_window_option "$WID" "$TIMER_STATE_OPTION" "$ARG2"

@@ -104,7 +104,17 @@ finals="$(awk -F'\t' -v US="$US" '
         T[key] = (NF >= 10 && $10 != "") ? $10 : "-"
     }
     END {
-        for (k in S) if (A[k] > 0) {
+        # Every key still in S[] is a live slot, INCLUDING one whose running
+        # total is 0. The pre-D7 `if (A[k] > 0)` filter here left D7 silently
+        # unimplemented: cycle_check logs `reset` + a re-establishing row
+        # exactly so a crash mid-cycle restores something, and BOTH of those
+        # rows carry total 0, so the slot D7 re-opened was dropped again here
+        # — state, tag and last_reset all lost, while the abandoned open
+        # interval stayed in the log for the CLI replay to bill as an
+        # OVERCOUNT (the worse of the two failure directions). A genuinely
+        # zeroed key is not in S[] at all: `reset` deletes it above, and only
+        # a later row can put it back.
+        for (k in S) {
             lr = (k in LR) ? LR[k] : ((k in FIRST) ? FIRST[k] : "-")
             print k US S[k] US A[k] US T[k] US lr
         }

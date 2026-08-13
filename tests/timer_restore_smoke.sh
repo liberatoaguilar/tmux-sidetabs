@@ -68,18 +68,36 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
 # bootwin: its live window is created later, for the `boot` fallback section
 row 2026-07-02T09:00:00-0600 start -  0  0  main bootwin @98 /tmp
 row 2026-07-02T09:00:45-0600 pause t1 45 45 main bootwin @98 /tmp
+# d7run / d7hold: each crossed its billing boundary moments before the crash,
+# so cycle_check's D7 pair (`reset` + a row re-establishing the slot) is the
+# last word and the running total is 0 — a LIVE timer, not a stopped one.
+# d7run is the run-state flavor (reset,resume), d7hold the auto-paused one
+# (reset,auto-pause). Both must come back: dropping a total-0 slot is what
+# left D7 unimplemented, losing state+tag+last_reset while the abandoned open
+# interval stayed in the log to be billed as an overcount. The tag is one no
+# tags file in this suite knows, so these windows never draw a cycle check.
+rowt 2026-08-01T09:00:00-0600 start      -  0    0    main d7run  @99  /tmp cust-D7
+rowt 2026-08-01T09:30:00-0600 auto-pause t1 1800 1800 main d7run  @99  /tmp cust-D7
+rowt 2026-08-06T00:00:05-0600 reset      -  1800 0    main d7run  @99  /tmp cust-D7
+rowt 2026-08-06T00:00:05-0600 resume     -  0    0    main d7run  @99  /tmp cust-D7
+rowt 2026-08-01T09:00:00-0600 start      -  0    0    main d7hold @100 /tmp cust-D7
+rowt 2026-08-01T09:30:00-0600 auto-pause t1 1800 1800 main d7hold @100 /tmp cust-D7
+rowt 2026-08-06T00:00:05-0600 reset      -  1800 0    main d7hold @100 /tmp cust-D7
+rowt 2026-08-06T00:00:05-0600 auto-pause t2 0    0    main d7hold @100 /tmp cust-D7
 
 # --- Server with matching windows; no plugin load needed (pure state work) ----
 tmux -L "$SOCKET" -f /dev/null new-session -d -s main -n alpha -x 200 -y 50
 tmux -L "$SOCKET" set -g @sidetabs-timer-log "$TMPLOG"
-for w in beta gamma tagged tagfirst oldschool legacy livewin; do
+for w in beta gamma tagged tagfirst oldschool legacy livewin d7run d7hold; do
     tmux -L "$SOCKET" new-window -t main -n "$w"
 done
 winid() { tmux -L "$SOCKET" list-windows -t main -F '#{window_name} #{window_id}' | awk -v n="$1" '$1==n{print $2}'; }
 wa="$(winid alpha)"; wb="$(winid beta)"; wg="$(winid gamma)"; wl="$(winid livewin)"
 wt="$(winid tagged)"; wf="$(winid tagfirst)"; wo="$(winid oldschool)"; wy="$(winid legacy)"
+wd7r="$(winid d7run)"; wd7h="$(winid d7hold)"
 [ -n "$wa" ] && [ -n "$wb" ] && [ -n "$wg" ] && [ -n "$wl" ] || fail "setup: missing windows"
 [ -n "$wt" ] && [ -n "$wf" ] && [ -n "$wo" ] && [ -n "$wy" ] || fail "setup: missing tag windows"
+[ -n "$wd7r" ] && [ -n "$wd7h" ] || fail "setup: missing D7 windows"
 
 # livewin: live running timer; keep it the ACTIVE window so the focus-engine
 # kick inside timer_restore leaves it running (0 clients -> window_active rules).
@@ -113,14 +131,15 @@ pass "reset timer stays gone"
 pass "live timer state never clobbered"
 
 # --- 5. One restore row per seeded window, 10 fields each --------------------
-# alpha, beta, tagged, tagfirst, oldschool — not gamma/delta/livewin/legacy.
+# alpha, beta, tagged, tagfirst, oldschool, d7run, d7hold — not
+# gamma/delta/livewin/legacy.
 nres="$(awk -F'\t' '!/^#/ && $2=="restore"' "$TMPLOG" | wc -l | tr -d ' ')"
-[ "$nres" = "5" ] || fail "expected 5 restore rows, got $nres"
+[ "$nres" = "7" ] || fail "expected 7 restore rows, got $nres"
 awk -F'\t' '!/^#/ && $2=="restore" && $7=="alpha" && $5=="160"' "$TMPLOG" | grep -q . || fail "no restore row for alpha/160"
 awk -F'\t' '!/^#/ && $2=="restore" && $7=="beta" && $5=="50"' "$TMPLOG" | grep -q . || fail "no restore row for beta/50"
 nf="$(awk -F'\t' '!/^#/ && $2=="restore" {print NF}' "$TMPLOG" | sort -u)"
 [ "$nf" = "10" ] || fail "expected 10 TSV fields on every restore row, got: $nf"
-pass "restore rows logged (5, schema intact)"
+pass "restore rows logged (7, schema intact)"
 
 # --- 6. Tag + derived last_reset re-seeded (C6) ------------------------------
 [ "$(winopt "$wt" @sidetabs_timer_acc)" = "300" ] || fail "tagged acc: '$(winopt "$wt" @sidetabs_timer_acc)' (want 300)"
@@ -142,6 +161,30 @@ pass "tag and derived last_reset re-seeded; restore row carries the tag"
     || fail "oldschool got a last_reset with no tag: '$(winopt "$wo" @sidetabs_timer_last_reset)'"
 [ -z "$(winopt "$wy" @sidetabs_timer_state)" ] || fail "legacy 6-col row drove a restore"
 pass "v2 rows restore untagged (and without last_reset); 6-col rows ignored"
+
+# --- 7b. D7: a slot left at total 0 by a cycle reset still restores ----------
+# This is acceptance criterion 2 applied at total 0, and the whole reason D7
+# emits a second row after `reset`. Both flavors must come back as a live,
+# resumable slot carrying the tag and the reset row's date as last_reset —
+# otherwise the window silently stops tracking for the rest of the cycle
+# (undercount) while its abandoned open interval keeps accruing in the CLI
+# replay (overcount). A running-at-death timer always comes back as hold.
+for pair in "d7run:$wd7r" "d7hold:$wd7h"; do
+    nm="${pair%%:*}"; wid="${pair#*:}"
+    [ "$(winopt "$wid" @sidetabs_timer_state)" = "hold" ] \
+        || fail "$nm state: '$(winopt "$wid" @sidetabs_timer_state)' (want hold)"
+    [ "$(winopt "$wid" @sidetabs_timer_acc)" = "0" ] \
+        || fail "$nm acc: '$(winopt "$wid" @sidetabs_timer_acc)' (want 0)"
+    [ -z "$(winopt "$wid" @sidetabs_timer_start)" ] \
+        || fail "$nm has a live interval start after restore"
+    [ "$(winopt "$wid" @sidetabs_timer_tag)" = "cust-D7" ] \
+        || fail "$nm tag: '$(winopt "$wid" @sidetabs_timer_tag)' (want cust-D7)"
+    [ "$(winopt "$wid" @sidetabs_timer_last_reset)" = "2026-08-06" ] \
+        || fail "$nm last_reset: '$(winopt "$wid" @sidetabs_timer_last_reset)' (want 2026-08-06)"
+    awk -F'\t' -v w="$nm" '!/^#/ && $2=="restore" && $7==w && $5=="0" && $10=="cust-D7"' \
+        "$TMPLOG" | grep -q . || fail "$nm: no restore row at total 0 carrying the tag"
+done
+pass "D7's total-0 slot restores state, tag and last_reset (both flavors)"
 
 # --- 8. Second run is a no-op ------------------------------------------------
 nrows_mid="$(lognorows)"
