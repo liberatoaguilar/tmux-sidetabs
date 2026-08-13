@@ -149,4 +149,52 @@ grep -q 'register repo' "$PICKOUT" \
   && fail "register-repo item present with no tags file: $(cat "$PICKOUT")"
 pass "register-repo item absent when the tags file does not exist"
 
+# 10. A menu entry's third element is a tmux COMMAND string, which run-shell
+#     re-parses with `sh -c` — it is NOT literal argv like the label and key.
+#     A hand-edited or foreign-written tags row whose tag carries a space would
+#     word-split there and tag_set.sh would take only its first word: the menu
+#     shows one client while the log records a tag no customer owns, silently
+#     misattributing every later interval with no error anywhere. `;`/`$(…)`
+#     rows would execute outright. Such rows must be SKIPPED — never rewritten
+#     into some other tag — while a well-formed C2 `uuid:uuid` tag still
+#     round-trips. --print-items is the seam for the command element, the way
+#     --print is for the label/key pair.
+ITEMSOUT="${TMPDIR:-/tmp}/sidetabs_tagmenu_items_$$.out"
+SRCCONF="${TMPDIR:-/tmp}/sidetabs_tagmenu_cmd_$$.conf"
+SENTINEL="${TMPDIR:-/tmp}/sidetabs_tagmenu_pwned_$$"
+trap 'cleanup; rm -f "$ITEMSOUT" "$SRCCONF" "$SENTINEL"' EXIT
+rm -f "$SENTINEL"
+UUIDTAG="27909867-8d0a-4764-9318-88ca1746b240:11111111-2222-3333-4444-555555555555"
+# Single-quoted format string on purpose: `$(id)` must reach the file literally.
+printf '# tag\tlabel\treset_day\n%s\tGood Client\t15\n27909867-8d0a 4764\tSpacey\t15\ncust-x;touch %s\tEvil\t1\n$(id)\tSubshell\t1\n' \
+  "$UUIDTAG" "$SENTINEL" > "$TMPTAGS"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_picker.sh --print $w0 > $PICKOUT"
+n="$(grep -c . "$PICKOUT" || true)"
+[ "$n" = "2" ] || fail "unusable rows still pickable: expected 2 items (1 tag + clear), got $n: $(cat "$PICKOUT")"
+grep -q "	${UUIDTAG}	Good Client" "$PICKOUT" || fail "well-formed uuid:uuid row rejected: $(cat "$PICKOUT")"
+[ "$(sed -n 1p "$PICKOUT" | cut -f1)" = "1" ] || fail "a skipped row burned a shortcut key: $(cat "$PICKOUT")"
+pass "tags rows that are not one safe sh word are skipped, not silently rewritten"
+
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_picker.sh --print-items $w0 > $ITEMSOUT"
+if grep -q ';' "$ITEMSOUT"; then
+  fail "a menu command string carries a shell metacharacter: $(cat "$ITEMSOUT")"
+fi
+[ "$(grep -c . "$ITEMSOUT" || true)" = "2" ] || fail "--print-items and --print disagree on entry count"
+idx=0
+while IFS= read -r cmdline; do
+  idx=$((idx + 1))
+  want="$(sed -n "${idx}p" "$PICKOUT" | cut -f2)"
+  printf '%s\n' "$cmdline" > "$SRCCONF"
+  tmux -L "$SOCKET" source-file "$SRCCONF"   # the parser a chosen menu item goes through
+  sleep 0.5
+  got="$(winopt "$w0" @sidetabs_timer_tag)"
+  if [ "$want" = "none" ]; then
+    [ -z "$got" ] || fail "clear entry left a tag behind: '$got'"
+  else
+    [ "$got" = "$want" ] || fail "menu entry $idx wrote '$got' but displays '$want'"
+  fi
+done < "$ITEMSOUT"
+[ ! -e "$SENTINEL" ] || fail "a tags-file row executed a command through the menu"
+pass "every menu entry writes exactly the tag it displays; no row can execute"
+
 echo "ALL TAG MENU SMOKE TESTS PASSED"
