@@ -5,10 +5,12 @@
 # seeding (first sighting never zeroes a live total), a real boundary crossing
 # (logged `reset` immediately followed by `resume` — D7 — keeps the window
 # running through the reset), untagged windows and reset_day 0 tags never
-# firing, day-31 clamping onto Feb 28 in a non-leap year, the focus-tick
-# delivery path (timer_focus.sh, no toggle/cycle-check call from the test),
-# same-day idempotence, and a `cancel` that lands ON a boundary still
-# discarding its interval instead of banking it as billable seconds.
+# firing, day-31 clamping onto Feb 28 in a non-leap year, BOTH focus-engine
+# delivery paths (section 7: the auto-hold arm, which runs the check in-process;
+# section 11: the ambient `cycle_due` arm, which fires on a window purely
+# because focus changed on a DIFFERENT one), same-day idempotence, and a
+# `cancel` that lands ON a boundary still discarding its interval instead of
+# banking it as billable seconds.
 #
 # Dates are faked via SIDETABS_TIMER_TODAY, inline in every run-shell command
 # string — run-shell executes in the tmux server's own environment and does
@@ -311,5 +313,100 @@ run "SIDETABS_TIMER_TODAY=2026-08-20 '$PLUGIN_DIR/scripts/timer.sh' cancel $wcan
 [ "$(winopt "$wcan" @sidetabs_timer_state)" = "pause" ] \
     || fail "cancelwin: non-boundary cancel left state '$(winopt "$wcan" @sidetabs_timer_state)'"
 pass "cancel with no boundary crossed is unchanged"
+
+# =============================================================================
+# 11. AMBIENT delivery of C5's lazy reset: timer_focus.sh's third arm
+#     (`elif cycle_due "$tag" "$lastreset"`), which fires a cycle-check on a
+#     window purely as a side effect of focus changing on a DIFFERENT window.
+#     Nothing above reaches it. Section 7 looks like it does but hits arm 1
+#     instead: the select-window away leaves the window run+unfocused, so the
+#     engine dispatches auto-hold, and cycle_check runs in-process inside THAT
+#     call regardless of the elif gate. Section 9 calls `timer.sh cycle-check`
+#     directly. So a total removal of this arm — and of the cycle_due() bash
+#     predicate gating it — used to ship green (verified by mutation: `return 1`
+#     at the top of cycle_due passed every suite).
+#
+#     This arm is the complement to the other two: they already visit every
+#     window the user enters or leaves, so this one carries the rest —
+#     hold+unfocused, run+focused, sticky pause, untimed tagged. A missed reset
+#     here is cosmetic to billing (C8 replay is log-driven and never reads tmux
+#     `acc`; a held window has no open interval), but stale sidebar totals are
+#     what C5 exists to prevent, and drift shows up as spurious C11 notices.
+#
+#     REAL CLOCK only: the hook runs in the tmux server's own environment, so
+#     SIDETABS_TIMER_TODAY cannot reach a hook-driven timer_focus.sh. Hence
+#     this section is last, after every date-faked one, and the oracle for the
+#     positive case is the tags-file reset day (15) rather than cycle_start
+#     itself. Fixtures are written as options directly (sections 7/9 idiom) so
+#     the engine's own tick is the first real interaction each one ever sees.
+# =============================================================================
+wamb="$(newwin ambientwin)"
+wfresh="$(newwin ambientfresh)"
+wzeroamb="$(newwin ambientzero)"
+wtick="$(newwin tickwin)"          # a plain window to bounce focus off; untagged
+run "$PLUGIN_DIR/scripts/tag_set.sh $wamb cust-A"        # reset_day 15
+run "$PLUGIN_DIR/scripts/tag_set.sh $wfresh cust-A"
+run "$PLUGIN_DIR/scripts/tag_set.sh $wzeroamb cust-C"    # reset_day 0: never due
+
+# Negative control: seeded through the cycle-check seam on the REAL clock, so
+# last_reset is the current cycle start without the test having to compute a
+# date. Honest about its reach — cycle_check re-validates staleness itself, so
+# this catches a regression where the child fires and acts, not merely one
+# where cycle_due's comparison inverts.
+run "$PLUGIN_DIR/scripts/timer.sh cycle-check $wfresh"
+fresh_lr="$(winopt "$wfresh" @sidetabs_timer_last_reset)"
+[ -n "$fresh_lr" ] || fail "ambientfresh: control seeding produced no last_reset"
+tmux -L "$SOCKET" set-option -w -t "$wfresh" @sidetabs_timer_state hold
+tmux -L "$SOCKET" set-option -w -t "$wfresh" @sidetabs_timer_acc 1800
+tmux -L "$SOCKET" set-option -w -t "$wzeroamb" @sidetabs_timer_state hold
+tmux -L "$SOCKET" set-option -w -t "$wzeroamb" @sidetabs_timer_acc 1800
+
+# Positive case, seeded LAST so no earlier fixture's new-window tick delivers
+# the reset before the deliberate trigger below.
+tmux -L "$SOCKET" set-option -w -t "$wamb" @sidetabs_timer_last_reset 2020-01-15
+tmux -L "$SOCKET" set-option -w -t "$wamb" @sidetabs_timer_state hold
+tmux -L "$SOCKET" set-option -w -t "$wamb" @sidetabs_timer_acc 1800
+[ "$(resets_for ambientwin)" = "0" ] || fail "ambientwin: reset fired before the trigger"
+
+# Trigger: focus moves between two windows that are NEITHER fixture, so no
+# fixture is ever focused, toggled, or the subject of a cycle-check call. The
+# two targets must be DISTINCT — select-window onto the already-current window
+# returns early inside tmux and fires no hook at all.
+tmux -L "$SOCKET" select-window -t "$away"
+sleep 0.8
+tmux -L "$SOCKET" select-window -t "$wtick"
+sleep 0.8
+
+amb_lr="$(winopt "$wamb" @sidetabs_timer_last_reset)"
+[ "$amb_lr" != "2020-01-15" ] \
+    || fail "ambientwin: the ambient cycle_due arm never delivered a reset (last_reset still 2020-01-15)"
+case "$amb_lr" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-15) ;;
+    *) fail "ambientwin: last_reset '$amb_lr' is not a cust-A (reset_day 15) cycle start" ;;
+esac
+[ "$(winopt "$wamb" @sidetabs_timer_acc)" = "0" ] \
+    || fail "ambientwin: total not zeroed: '$(winopt "$wamb" @sidetabs_timer_acc)'"
+[ "$(winopt "$wamb" @sidetabs_timer_state)" = "hold" ] \
+    || fail "ambientwin: a boundary reset must keep a held slot LIVE (D7), got '$(winopt "$wamb" @sidetabs_timer_state)'"
+[ "$(resets_for ambientwin)" = "1" ] \
+    || fail "ambientwin: expected exactly 1 reset row, got $(resets_for ambientwin)"
+atail="$(events_for ambientwin | tail -2 | tr '\n' ',')"
+[ "$atail" = "reset,auto-pause," ] \
+    || fail "ambientwin: expected reset + the D7 re-establishing row, got: $atail"
+pass "ambient focus ticks deliver a due cycle reset to a window nobody touched"
+
+[ "$(winopt "$wfresh" @sidetabs_timer_acc)" = "1800" ] \
+    || fail "ambientfresh: a not-due window was reset by the ambient arm"
+[ "$(winopt "$wfresh" @sidetabs_timer_last_reset)" = "$fresh_lr" ] \
+    || fail "ambientfresh: last_reset moved on a window that owed no reset"
+[ "$(resets_for ambientfresh)" = "0" ] \
+    || fail "ambientfresh: ambient tick logged a reset for a not-due window"
+[ "$(winopt "$wzeroamb" @sidetabs_timer_acc)" = "1800" ] \
+    || fail "ambientzero: a reset_day 0 tag was reset by the ambient arm"
+[ -z "$(winopt "$wzeroamb" @sidetabs_timer_last_reset)" ] \
+    || fail "ambientzero: reset_day 0 seeded last_reset via the ambient arm"
+[ "$(resets_for ambientzero)" = "0" ] \
+    || fail "ambientzero: ambient tick logged a reset for a reset_day 0 tag"
+pass "the same ambient ticks leave not-due and never-reset windows alone"
 
 echo "ALL TIMER CYCLE SMOKE TESTS PASSED"
