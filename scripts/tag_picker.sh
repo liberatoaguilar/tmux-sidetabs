@@ -46,7 +46,13 @@ cur="$(get_window_option "$WID" "$TIMER_TAG_OPTION" "")"
 # misattribution that no error surfaces anywhere. `;`, `$(…)` and backticks
 # would execute outright. Hence the two fields are treated differently:
 #
-#   LABEL is literal argv, so sanitizing it is enough.
+#   LABEL is literal argv — but argv POSITION 1 is still parsed by tmux with
+#   getopt semantics that stop only at the first non-option argument, so a
+#   first label beginning with `-` is eaten as flags and display-menu aborts
+#   before the menu ever opens. Two symmetric hazards, then: the THIRD element
+#   is re-parsed by sh, and the FIRST is re-parsed by getopt. sanitize() below
+#   answers the former; the dash guard and the `--` at the call site answer the
+#   latter.
 #   TAG is checked against C2's alphabet with an ALLOWLIST, and a row that
 #   fails is SKIPPED, never rewritten. Substituting a different tag for the
 #   one the entry displays is precisely the failure being fixed, so a row that
@@ -72,6 +78,18 @@ while IFS="$TAB" read -r rawtag rawlabel; do
     label="$(sanitize "$rawlabel")"
     [ -n "$label" ] || label="$tag"
     [ "$tag" = "$cur" ] && label="${label} (current)"
+    # Dash guard, AFTER the fallback and the suffix so it sees the FINAL label:
+    # the fallback can itself hand back a dash-leading label, because C2's tag
+    # alphabet permits `-foo`. Rows are emitted sorted by tag, so the
+    # lowest-sorting customer supplies argv position 1 and one dash-leading
+    # label would abort the submenu for EVERY client — leaving windows
+    # unassignable, i.e. logging untagged time, the C9 abort path. GUARD, not
+    # skip: these rows are trusted data written by `usage configure --sync`, and
+    # dropping one makes that customer unpickable, which is the failure being
+    # fixed. One leading space costs a column of indent and keeps the operator's
+    # label intact, where stripping the dash would show a name the CLI does not
+    # have on file. The tag written by the entry is untouched either way.
+    case "$label" in -*) label=" $label" ;; esac
     # Belt and braces: the allowlist above already guarantees a single sh word,
     # and the added quotes keep it one even if that alphabet is ever widened.
     # They are not a substitute for it — sh still expands `$`, backticks and
@@ -101,8 +119,12 @@ if [ "$MODE" = "items" ]; then
     exit 0
 fi
 
+# `--` ends tmux's flag parsing (arguments.c args_parse_flags, present since
+# well before the 3.4 floor), so no menu element can ever be read as a flag,
+# including the clear entry and any future reordering of ITEMS. The per-label
+# dash guard above stays as the version-independent belt.
 if [ -n "$CLIENT" ]; then
-    tmux display-menu -c "$CLIENT" -T ' assign client ' "${ITEMS[@]}"
+    tmux display-menu -c "$CLIENT" -T ' assign client ' -- "${ITEMS[@]}"
 else
-    tmux display-menu -T ' assign client ' "${ITEMS[@]}"
+    tmux display-menu -T ' assign client ' -- "${ITEMS[@]}"
 fi

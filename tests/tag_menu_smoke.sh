@@ -287,4 +287,39 @@ case "$lockarm" in
 esac
 pass "the menu subcommand takes no per-window lock (it blocks inside display-menu)"
 
+# 12. A tags-file label that starts with `-` must not be able to abort the
+#     submenu. The label is the FIRST element of display-menu's argv, and tmux
+#     parses that with getopt semantics that stop only at the first non-option
+#     argument — so a dash-leading first label is eaten as flags and the whole
+#     "assign client…" submenu dies at argument parsing (verified on 3.6b:
+#     `display-menu -T t "-Acme" 1 "run-shell true"` -> `unknown flag -A`).
+#     Rows are emitted sorted by tag, so whichever customer sorts first owns
+#     argv position 1, and one such label makes EVERY client unassignable —
+#     unassignable windows log untagged time, which is the C9 abort path.
+#     The label is GUARDED, never skipped: the row is trusted data written by
+#     `usage configure --sync`, and dropping it would make that customer
+#     unpickable, which is the very failure being fixed.
+printf '# tag\tlabel\treset_day\n-dashtag\tDash Tag\t15\nzz-cust\t-Corksplit\t26\n' > "$TMPTAGS"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_picker.sh --print $w0 > $PICKOUT"
+[ "$(grep -c . "$PICKOUT" || true)" = "3" ] \
+  || fail "dash-leading rows were dropped instead of guarded: $(cat "$PICKOUT")"
+while IFS= read -r line; do
+  lbl="$(printf '%s\n' "$line" | cut -f3)"
+  case "$lbl" in
+    -*) fail "menu label '$lbl' still starts with a dash (argv position 1 aborts display-menu)" ;;
+  esac
+done < "$PICKOUT"
+# Also cover the label FALLBACK path: C2's tag alphabet allows a leading `-`,
+# so a row with an empty label makes `label="$tag"` reintroduce one. A guard
+# living inside sanitize() alone would miss this.
+printf '# tag\tlabel\treset_day\n-dashtag\t\t15\n' > "$TMPTAGS"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_picker.sh --print $w0 > $PICKOUT"
+lbl="$(sed -n 1p "$PICKOUT" | cut -f3)"
+case "$lbl" in
+  -*) fail "the label fallback reintroduced a dash-leading menu label: '$lbl'" ;;
+esac
+[ "$(sed -n 1p "$PICKOUT" | cut -f2)" = "-dashtag" ] \
+  || fail "guarding the label rewrote the tag the entry assigns: $(cat "$PICKOUT")"
+pass "dash-leading labels stay pickable but can no longer be parsed as display-menu flags"
+
 echo "ALL TAG MENU SMOKE TESTS PASSED"
