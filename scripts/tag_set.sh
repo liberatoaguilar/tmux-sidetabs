@@ -8,45 +8,23 @@
 #          same "garbage can't corrupt state" contract as flag_set.sh.
 #   none = clear the tag.
 #
-# A tag CHANGE clears @sidetabs_timer_last_reset (C5's marker): reassigning a
-# window from customer A (reset day 26) to B (reset day 1) must not carry A's
-# last_reset forward — cycle_check would compare it against B's boundary and
-# could either zero a total the user just meant to relabel, or silently skip a
-# reset B genuinely owes. Unsetting sends the next cycle_check down C5's
-# first-sighting path (adopt the new tag's current cycle start, don't reset) —
-# exactly the rollout-seeding behavior C5 already relies on. Re-picking the
-# SAME tag (the menu marks it "(current)") is deliberately a no-op here: an
-# unconditional unset would re-seed to "now" and swallow a reset that was
-# actually due.
+# This is a thin front end for `timer.sh retag`, which owns the whole operation.
+# It cannot be a plain option write here: a tag change is an ATTRIBUTION
+# BOUNDARY, so a timer that is RUNNING at that moment must have its open
+# interval closed under the old tag and reopened under the new one. Writing the
+# option alone left one interval spanning the change, and the CLI replay bills a
+# whole interval to the tag it opened under — so every second worked after the
+# reassignment went to the previous client, with no warning on either side.
+# Closing the interval needs timer.sh's fold/acc/now machinery and its per-window
+# lock, and per D8 the cycle check has to run in the same process, so the logic
+# lives there and this script just hands over. See the `retag` arm in timer.sh
+# for the row shapes and for why @sidetabs_timer_last_reset is cleared.
 set -euo pipefail
 
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-source "$CURRENT_DIR/variables.sh"
-source "$CURRENT_DIR/helpers.sh"
 
 WID="${1:-}"
 VAL="${2:-}"
 [ -z "$WID" ] && exit 0
 
-old_tag="$(get_window_option "$WID" "$TIMER_TAG_OPTION" "")"
-
-case "$VAL" in
-    none)
-        unset_window_option "$WID" "$TIMER_TAG_OPTION"
-        [ -n "$old_tag" ] && unset_window_option "$WID" "$TIMER_LAST_RESET_OPTION"
-        ;;
-    '')
-        exit 0
-        ;;
-    *)
-        # Strip TAB and other control chars before the write — the value lands
-        # in a TSV log column (timer.sh log_event) and, via tag_picker.sh, in a
-        # run-shell command string. Same idiom as timer.sh:72-74 / note.sh.
-        tag="$(printf '%s' "$VAL" | tr '\011' ' ' | tr -d '\000-\037' | tr -s ' ')"
-        [ -z "$tag" ] && exit 0
-        set_window_option "$WID" "$TIMER_TAG_OPTION" "$tag"
-        [ "$tag" != "$old_tag" ] && unset_window_option "$WID" "$TIMER_LAST_RESET_OPTION"
-        ;;
-esac
-
-"$CURRENT_DIR/refresh.sh" force
+exec "$CURRENT_DIR/timer.sh" retag "$WID" "$VAL"

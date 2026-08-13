@@ -106,6 +106,79 @@ tag="$(grep -v '^#' "$TMPLOG" | tail -1 | cut -f10)"
 tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/timer.sh reset $w0"
 pass "log_event carries the live tag into the event log"
 
+# 6b. Retagging a window whose timer is RUNNING closes the open interval under
+#     the OLD tag and reopens it under the NEW one. A tag change is an
+#     attribution boundary: the CLI replay bills a whole interval to the tag it
+#     OPENED under, so leaving one interval spanning the change billed every
+#     second worked after the reassignment to the previous client — an inflated
+#     row for A and a short row for B, with no warning on either side, because
+#     the replay's late-tagging warning only fires when the opening label was
+#     unattributable. Reassigning the window you are working in is the normal
+#     C7 flow, and the interval is bounded only by the next focus change.
+#     The rows must be auto-pause/auto-resume, never pause/resume: the restore
+#     replay maps `pause` to a sticky manual pause, which would strand the
+#     window unresumable if the server died between the two rows.
+billable_for_tag() {
+    awk -F'\t' -v t="$1" '!/^#/ && ($2=="pause" || $2=="auto-pause") && $10==t {s+=$4} END {print s+0}' "$TMPLOG"
+}
+rows_n() { grep -vc '^#' "$TMPLOG" || true; }
+
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_set.sh $w0 cust-A"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/timer.sh toggle $w0"   # start, tagged cust-A
+[ "$(winopt "$w0" @sidetabs_timer_state)" = "run" ] || fail "retag: expected a running timer"
+sleep 2
+
+before_rows="$(rows_n)"
+start_before="$(winopt "$w0" @sidetabs_timer_start)"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_set.sh $w0 cust-B"
+[ "$(winopt "$w0" @sidetabs_timer_tag)" = "cust-B" ] || fail "retag: tag not rewritten to cust-B"
+[ "$(winopt "$w0" @sidetabs_timer_state)" = "run" ] \
+    || fail "retag: the timer stopped running: '$(winopt "$w0" @sidetabs_timer_state)'"
+[ "$(winopt "$w0" @sidetabs_timer_start)" != "$start_before" ] \
+    || fail "retag: the live interval start was not reopened under the new tag"
+[ "$(rows_n)" = "$((before_rows + 2))" ] \
+    || fail "retag while running: expected exactly 2 new rows, got $(( $(rows_n) - before_rows ))"
+pair="$(grep -v '^#' "$TMPLOG" | tail -2 | cut -f2,10 | tr '\n' ',' | tr '\t' '/')"
+[ "$pair" = "auto-pause/cust-A,auto-resume/cust-B," ] \
+    || fail "retag: expected auto-pause under the old tag then auto-resume under the new, got: $pair"
+pass "retagging a running window closes the interval under the old tag and reopens under the new"
+
+# Re-picking the SAME tag mid-interval stays a total no-op: no rows, and the
+# live interval is NOT restarted (that would silently discard the seconds
+# accrued since it opened).
+before_rows="$(rows_n)"
+start_before="$(winopt "$w0" @sidetabs_timer_start)"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_set.sh $w0 cust-B"
+[ "$(rows_n)" = "$before_rows" ] || fail "retag: re-picking the same tag logged rows"
+[ "$(winopt "$w0" @sidetabs_timer_start)" = "$start_before" ] \
+    || fail "retag: re-picking the same tag restarted the live interval"
+
+# Clearing the tag mid-interval is the same root cause: the post-clear seconds
+# must land in the unattributed bucket (tag `-`) that C9/D5's global abort
+# watches, not keep flowing to the old customer.
+sleep 2
+before_rows="$(rows_n)"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_set.sh $w0 none"
+[ -z "$(winopt "$w0" @sidetabs_timer_tag)" ] || fail "retag none: tag not cleared"
+[ "$(winopt "$w0" @sidetabs_timer_state)" = "run" ] \
+    || fail "retag none: the timer stopped running: '$(winopt "$w0" @sidetabs_timer_state)'"
+[ "$(rows_n)" = "$((before_rows + 2))" ] \
+    || fail "retag none: expected exactly 2 new rows, got $(( $(rows_n) - before_rows ))"
+pair="$(grep -v '^#' "$TMPLOG" | tail -2 | cut -f2,10 | tr '\n' ',' | tr '\t' '/')"
+[ "$pair" = "auto-pause/cust-B,auto-resume/-," ] \
+    || fail "retag none: expected auto-pause under cust-B then auto-resume untagged, got: $pair"
+sleep 2
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/timer.sh toggle $w0"   # close the last interval
+
+# The billing invariant: each tag owns the seconds worked while it was assigned,
+# and none owns the whole span.
+for t in cust-A cust-B -; do
+    [ "$(billable_for_tag "$t")" -ge 1 ] \
+        || fail "retag: tag '$t' was billed no seconds at all: $(billable_for_tag "$t")"
+done
+pass "clearing a tag mid-interval sends the following seconds to the unattributed bucket"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/timer.sh reset $w0"
+
 # 7. register_repo.sh guards, run IN-SERVER via run-shell (tmux propagates the
 #    shell command's own exit status as run-shell's exit status — verified
 #    empirically: a foreground run-shell is not fire-and-forget). Both guard

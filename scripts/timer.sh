@@ -30,9 +30,9 @@
 # Both are absent for plugin users who never set @sidetabs-timer-tags-file.
 #
 # Bound (sidebar-focused): @sidetabs-timer-key toggle, @sidetabs-timer-menu-key menu.
-# Usage: timer.sh <toggle|cancel|reset|menu|adjust|adjust-prompt|auto-hold|auto-resume|cycle-check|restore-state> [window_id] [arg] [arg2] [arg3] [arg4]
-#   arg  = adjust value (adjust), client_name (menu / adjust-prompt), or
-#          accumulated seconds (restore-state).
+# Usage: timer.sh <toggle|cancel|reset|menu|adjust|adjust-prompt|retag|auto-hold|auto-resume|cycle-check|restore-state> [window_id] [arg] [arg2] [arg3] [arg4]
+#   arg  = adjust value (adjust), client_name (menu / adjust-prompt), the new
+#          tag or `none` (retag), or accumulated seconds (restore-state).
 #   arg2 = state to seed, hold|pause (restore-state only).
 #   arg3 = tag to seed, `-` for untagged (restore-state only).
 #   arg4 = @sidetabs_timer_last_reset to seed, ISO date (restore-state only).
@@ -251,7 +251,7 @@ case "$CMD" in
     auto-hold|auto-resume|cycle-check)
         lock_win || { touch "${ENGINE_LOCK}.rerun" 2>/dev/null || true; exit 0; }
         ;;
-    toggle|cancel|reset|adjust|menu|restore-state)
+    toggle|cancel|reset|adjust|menu|restore-state|retag)
         lock_win || true
         ;;
 esac
@@ -271,11 +271,14 @@ acc="$(num_or "$(get_window_option "$WID" "$TIMER_ACC_OPTION" 0)" 0)"
 # the open interval as a billable `auto-pause` row, and then picking "cancel
 # interval (keep total)" discarded a zero-length one. Every mutating action
 # reachable from the menu runs the check itself (cancel and adjust are in this
-# list; reset folds into its own reset row), and the focus engine's cycle_due
-# arm still delivers C5's lazy reset to windows nobody interacts with, so
-# nothing is lost by opening a menu and escaping.
+# list; reset folds into its own reset row; assign-client goes through `retag`),
+# and the focus engine's cycle_due arm still delivers C5's lazy reset to windows
+# nobody interacts with, so nothing is lost by opening a menu and escaping.
+#
+# `retag` runs the check BEFORE the tag is rewritten, so it evaluates the OLD
+# tag's boundary — the cycle that is actually closing.
 case "$CMD" in
-    toggle|cancel|adjust|auto-hold|auto-resume|cycle-check) cycle_check ;;
+    toggle|cancel|adjust|retag|auto-hold|auto-resume|cycle-check) cycle_check ;;
 esac
 
 case "$CMD" in
@@ -359,6 +362,69 @@ adjust)
     set_window_option "$WID" "$TIMER_ACC_OPTION" "$acc"
     [ -z "$state" ] && set_window_option "$WID" "$TIMER_STATE_OPTION" "pause"
     log_event adjust - "$((acc - old))" "$acc"
+    nudge_redraw
+    ;;
+retag)
+    # Reassign (or clear) the window's attribution tag. tag_set.sh delegates
+    # here rather than writing @sidetabs_timer_tag itself, because a tag change
+    # is an ATTRIBUTION BOUNDARY and the open interval has to be closed on it.
+    #
+    # log_event stamps the tag at write time (C1), and the CLI replay attributes
+    # a whole interval to the tag it OPENED under. So rewriting the option
+    # underneath a running timer used to leave one interval spanning the change:
+    # every second worked AFTER the reassignment billed to the PREVIOUS client,
+    # bounded only by the next focus change. Both endpoints are attributable in
+    # an A -> B retag, so the replay's late-tagging warning never fired either —
+    # an inflated row for A and a short row for B, and every guard passed.
+    # Clearing the tag was the same root: the post-clear seconds kept going to
+    # the old tag instead of the unattributed bucket D5's global abort watches.
+    #
+    # The fix is cycle_check's own fold/close/re-establish pattern (D7): close
+    # the interval under the old tag, rewrite the option, reopen under the new
+    # one. Ordering is load-bearing — the closing row must be written BEFORE the
+    # option changes and the reopening row AFTER. auto-pause/auto-resume, not
+    # pause/resume: timer_restore.sh maps `pause` to a sticky manual pause,
+    # which would strand the window unresumable if the server died between the
+    # two rows. hold/pause/unset need no rows at all — their interval is already
+    # closed, so the past stays with the old tag and the next resume opens under
+    # the new one.
+    #
+    # A tag CHANGE also clears @sidetabs_timer_last_reset (C5's marker):
+    # reassigning from customer A (reset day 26) to B (reset day 1) must not
+    # carry A's marker forward — cycle_check would compare it against B's
+    # boundary and could either zero a total the user just meant to relabel, or
+    # silently skip a reset B genuinely owes. Unsetting sends the next
+    # cycle_check down C5's first-sighting path (adopt the new tag's current
+    # cycle start, don't reset). Re-picking the SAME tag (the menu marks it
+    # "(current)") exits before any of that: an unconditional unset would
+    # re-seed to "now" and swallow a reset that was actually due.
+    old_tag="$(get_window_option "$WID" "$TIMER_TAG_OPTION" "")"
+    case "$ARG" in
+        none) new_tag="" ;;
+        '')   exit 0 ;;
+        *)    # Strip TAB and other control chars before the write: the value
+              # lands in a TSV log column, in timer_focus.sh's TAB-separated
+              # list-windows format, and (per C7) in a menu label.
+              new_tag="$(printf '%s' "$ARG" | tr '\011' ' ' | tr -d '\000-\037' | tr -s ' ')"
+              [ -z "$new_tag" ] && exit 0   # garbage never changes state (C4)
+              ;;
+    esac
+    [ "$new_tag" = "$old_tag" ] && exit 0
+    if [ "$state" = "run" ]; then
+        fold_interval
+        set_window_option "$WID" "$TIMER_ACC_OPTION" "$acc"
+        log_event auto-pause "$FOLD_START" "$FOLD_DUR" "$acc"   # carries the OLD tag
+    fi
+    if [ -n "$new_tag" ]; then
+        set_window_option "$WID" "$TIMER_TAG_OPTION" "$new_tag"
+    else
+        unset_window_option "$WID" "$TIMER_TAG_OPTION"
+    fi
+    unset_window_option "$WID" "$TIMER_LAST_RESET_OPTION"
+    if [ "$state" = "run" ]; then
+        set_window_option "$WID" "$TIMER_START_OPTION" "$now"
+        log_event auto-resume - 0 "$acc"   # carries the NEW tag; re-establishes the slot (D7)
+    fi
     nudge_redraw
     ;;
 cycle-check)
