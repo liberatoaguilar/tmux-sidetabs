@@ -234,6 +234,22 @@ cycle_check() {
 # busy (a user op is mid-flight and supersedes them) but ask the engine to
 # reconcile again; user keypress ops proceed unlocked after ~250ms rather than
 # ever eating the key. State is read AFTER the lock, so it is always fresh.
+#
+# NEVER hold this lock across a BLOCKING tmux call. `menu` is deliberately
+# absent from both arms below for exactly that reason: `tmux display-menu`
+# blocks the invoking process until the user dismisses the overlay, so a locked
+# `menu` pinned the window lock for a user-controlled span, every engine op on
+# that window (auto-hold/auto-resume/cycle-check) was refused for the duration,
+# and the unfocused wall time went on accruing on a `run` timer until the menu
+# closed — then folded into ONE billable interval carrying the window's tag
+# (measured: a menu left open 16s billed 18s to a client that was worked for 2).
+# It also livelocked timer_focus.sh, whose refused children keep touching
+# `${ENGINE_LOCK}.rerun` and restarting its loop. The lock bought nothing: the
+# menu arm only READS the tag, it is excluded from the cycle_check dispatch
+# below, and every mutating action it offers (cancel/reset/adjust/assign) is a
+# fresh timer.sh invocation that takes this lock itself. If the menu arm is ever
+# made to mutate state, take the lock and RELEASE it (rmdir + clear the trap)
+# BEFORE display-menu — do not re-add `menu` here.
 SERVER_PID="$(tmux display-message -p '#{pid}' 2>/dev/null)"
 ENGINE_LOCK="${TMPDIR:-/tmp}/sidetabs_timerfocus_${SERVER_PID}"
 lock_win() {
@@ -251,7 +267,7 @@ case "$CMD" in
     auto-hold|auto-resume|cycle-check)
         lock_win || { touch "${ENGINE_LOCK}.rerun" 2>/dev/null || true; exit 0; }
         ;;
-    toggle|cancel|reset|adjust|menu|restore-state|retag)
+    toggle|cancel|reset|adjust|restore-state|retag)
         lock_win || true
         ;;
 esac

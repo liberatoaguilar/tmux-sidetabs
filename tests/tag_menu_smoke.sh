@@ -270,4 +270,21 @@ done < "$ITEMSOUT"
 [ ! -e "$SENTINEL" ] || fail "a tags-file row executed a command through the menu"
 pass "every menu entry writes exactly the tag it displays; no row can execute"
 
+# 11. The `menu` subcommand must never take the per-window timer lock.
+#     `tmux display-menu` BLOCKS its invoking process until the user dismisses
+#     the overlay, so a locked `menu` pins the lock for a user-controlled span:
+#     every focus-engine op on that window is refused, unfocused wall time keeps
+#     accruing on a `run` timer, and the whole span is folded into ONE billable
+#     interval when the menu finally closes (a menu left open over lunch bills
+#     lunch to the client; measured 18s billed for 2s of focused work).
+#     Deliberately a STATIC assertion: the only dynamic repro needs a
+#     pty-attached client pressing the key, and the SIDETABS_TIMER_MENU_PRINT
+#     seam returns before display-menu, so it cannot exercise the blocking hold.
+lockarm="$(grep -n 'restore-state|retag)' "$PLUGIN_DIR/scripts/timer.sh" | head -1)"
+[ -n "$lockarm" ] || fail "timer.sh: could not find the user-op lock_win case arm"
+case "$lockarm" in
+  *menu*) fail "timer.sh: 'menu' is back in the lock_win case arm: $lockarm" ;;
+esac
+pass "the menu subcommand takes no per-window lock (it blocks inside display-menu)"
+
 echo "ALL TAG MENU SMOKE TESTS PASSED"
