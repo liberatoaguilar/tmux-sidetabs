@@ -19,8 +19,12 @@
 # Events: start resume pause auto-pause auto-resume adjust cancel reset restore.
 # Logging is best-effort: an unwritable log never aborts a state transition.
 #
+# Per-tag billing-cycle reset (C5): before any interaction, a tagged window
+# whose tag carries a reset day (tags file) and whose @sidetabs_timer_last_reset
+# predates the current cycle start is zeroed in-process by cycle_check below.
+#
 # Bound (sidebar-focused): @sidetabs-timer-key toggle, @sidetabs-timer-menu-key menu.
-# Usage: timer.sh <toggle|cancel|reset|menu|adjust|adjust-prompt|auto-hold|auto-resume|restore-state> [window_id] [arg] [arg2]
+# Usage: timer.sh <toggle|cancel|reset|menu|adjust|adjust-prompt|auto-hold|auto-resume|cycle-check|restore-state> [window_id] [arg] [arg2]
 #   arg  = adjust value (adjust), client_name (menu / adjust-prompt), or
 #          accumulated seconds (restore-state).
 #   arg2 = state to seed, hold|pause (restore-state only).
@@ -29,6 +33,7 @@ set -euo pipefail
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 source "$CURRENT_DIR/variables.sh"
 source "$CURRENT_DIR/helpers.sh"
+source "$CURRENT_DIR/tags.sh"
 
 CMD="${1:-toggle}"
 WID="${2:-$(tmux display-message -p '#{window_id}')}"
@@ -92,6 +97,76 @@ fold_interval() {
     acc=$((acc + FOLD_DUR))
 }
 
+# C5 lazy per-tag billing-cycle reset. Runs before every interaction
+# subcommand (dispatch below): when the window's tag has a reset day and a
+# cycle boundary fell after this window's last reset, zero the timer HERE,
+# in-process. Never a `timer.sh reset` child (D8) — an engine op's child loses
+# lock_win and exits 0 silently, so the reset would simply vanish. Checking
+# lazily is also what gives sleep/offline catch-up for free: no daemon, the
+# boundary is noticed on the first interaction after it passed.
+# Reads and updates the state/now/acc globals, so the subcommand that follows
+# sees the post-reset world.
+cycle_check() {
+    local tag cs last re was_run
+    tag="$(get_window_option "$WID" "$TIMER_TAG_OPTION" "")"
+    [ -n "$tag" ] && [ "$tag" != "-" ] || return 0
+    cs="$(cycle_start "$(tag_reset_day "$tag")")"   # empty = never auto-reset
+    [ -n "$cs" ] || return 0
+
+    # get_window_option cannot tell empty from unset, so both look the same
+    # here — and both mean "first sighting": adopt the current cycle start
+    # WITHOUT resetting. Deploying mid-cycle must not zero a live total (C5
+    # rollout seeding). A malformed value (only reachable via a bad restore
+    # seed) takes the same safe path.
+    last="$(get_window_option "$WID" "$TIMER_LAST_RESET_OPTION" "")"
+    re='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+    if [[ ! "$last" =~ $re ]]; then
+        set_window_option "$WID" "$TIMER_LAST_RESET_OPTION" "$cs"
+        return 0
+    fi
+    # Two same-shape ISO dates: compare as plain integers rather than with
+    # `<`, whose collation depends on the locale. Not stale -> nothing due.
+    [ "${last//-/}" -lt "${cs//-/}" ] || return 0
+
+    # Nothing accrued and no timer to keep alive: just move the marker, so an
+    # idle tagged window does not log an empty `reset` every cycle (the reset
+    # arm's own `[ -z "$state" ] && exit 0` precedent). acc > 0 with no state
+    # is unreachable today (adjust seeds `pause`); if it ever happens it falls
+    # through to the real clearing path below.
+    if [ -z "$state" ] && [ "$acc" -eq 0 ]; then
+        set_window_option "$WID" "$TIMER_LAST_RESET_OPTION" "$cs"
+        return 0
+    fi
+
+    was_run=0; [ "$state" = "run" ] && was_run=1
+    if [ "$was_run" = "1" ]; then
+        # Close the open interval as its own row FIRST. Replay attributes
+        # seconds on closing events only and treats `reset` as a boundary
+        # marker, so folding a long head-down interval into the reset row
+        # alone would drop it from the cycle it belongs to.
+        fold_interval
+        log_event auto-pause "$FOLD_START" "$FOLD_DUR" "$acc"
+    fi
+    log_event reset - "$acc" 0   # col4 = cleared total, logged before zeroing
+    acc=0
+    if [ "$was_run" = "1" ]; then
+        # D7: reset immediately followed by resume. A lone `reset` deletes the
+        # key in timer_restore.sh's replay, so a crash before the next closing
+        # event would restore nothing for a window that is in fact running.
+        set_window_option "$WID" "$TIMER_ACC_OPTION" 0
+        set_window_option "$WID" "$TIMER_START_OPTION" "$now"
+        set_window_option "$WID" "$TIMER_STATE_OPTION" "run"
+        log_event resume - 0 0
+    else
+        state=""
+        unset_window_option "$WID" "$TIMER_STATE_OPTION"
+        unset_window_option "$WID" "$TIMER_START_OPTION"
+        unset_window_option "$WID" "$TIMER_ACC_OPTION"
+    fi
+    set_window_option "$WID" "$TIMER_LAST_RESET_OPTION" "$cs"
+    nudge_redraw
+}
+
 # Serialize per-window state mutations against the focus engine: an auto-hold
 # racing a C-t keypress could otherwise clobber the just-folded total and turn
 # a sticky manual pause back into an auto-resuming hold. Engine ops skip when
@@ -112,10 +187,10 @@ lock_win() {
     return 0
 }
 case "$CMD" in
-    auto-hold|auto-resume)
+    auto-hold|auto-resume|cycle-check)
         lock_win || { touch "${ENGINE_LOCK}.rerun" 2>/dev/null || true; exit 0; }
         ;;
-    toggle|cancel|reset|adjust|restore-state)
+    toggle|cancel|reset|adjust|menu|restore-state)
         lock_win || true
         ;;
 esac
@@ -123,6 +198,14 @@ esac
 state="$(get_window_option "$WID" "$TIMER_STATE_OPTION" "")"
 now="$(date +%s)"
 acc="$(num_or "$(get_window_option "$WID" "$TIMER_ACC_OPTION" 0)" 0)"
+
+# Every interaction is a chance to notice a crossed billing-cycle boundary.
+# restore-state is deliberately absent: it seeds a blank slate from the log and
+# gets its own derived last_reset (C6); resetting before that lands would zero
+# a total the restore is in the middle of putting back.
+case "$CMD" in
+    toggle|cancel|adjust|auto-hold|auto-resume|menu|cycle-check) cycle_check ;;
+esac
 
 case "$CMD" in
 toggle)
@@ -206,6 +289,11 @@ adjust)
     [ -z "$state" ] && set_window_option "$WID" "$TIMER_STATE_OPTION" "pause"
     log_event adjust - "$((acc - old))" "$acc"
     nudge_redraw
+    ;;
+cycle-check)
+    # Focus-engine entry point (timer_focus.sh): the cycle_check above is the
+    # whole job. Locked like the other engine ops so it defers to a user
+    # keypress instead of racing it, and asks for a rerun when it does.
     ;;
 adjust-prompt)
     if [ -n "$ARG" ]; then

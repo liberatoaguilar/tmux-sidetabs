@@ -287,6 +287,17 @@ original `C-h` / `C-j` / `C-k` bindings.)
   `restore` event. Seconds between the last logged event and the server dying
   are not recoverable. Disable with `@sidetabs-timer-restore off`. Flag colors
   have no durable record and still reset with the server.
+- **Per-tag billing-cycle reset**: a window carrying a tag (`@sidetabs_timer_tag`)
+  whose row in the tags file names a reset day (1–31, clamped to the month's real
+  length) zeroes itself on that day each month. The check is lazy — it happens on
+  the next timer interaction or focus tick after the boundary, so a machine asleep
+  across the date catches up on its own — and it logs an ordinary `reset` event,
+  which is a boundary marker in the log, never a subtraction. A running timer keeps
+  running (logged `reset` + `resume`), and the interval that was open when the
+  boundary was noticed is closed into the outgoing cycle first. The first time a
+  tagged window is seen the current cycle start is only recorded
+  (`@sidetabs_timer_last_reset`), so enabling this mid-cycle never zeroes a live
+  total. Untagged windows, and tags with reset day `0`, never auto-reset.
 - Killing a window with a running timer silently drops the unlogged in-flight interval —
   if timing a long task, pause first to ensure it's logged.
 - Timers use wall-clock time: laptop sleep counts toward elapsed time. The timer
