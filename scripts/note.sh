@@ -1,23 +1,35 @@
 #!/usr/bin/env bash
-# Per-window free-text note. Live state is the window user option
-# @sidetabs_note; the durable record is a TSV store (@sidetabs-note-store) keyed
-# by (session name, window name), so notes come back after a server restart via
-# `note.sh restore` (called from resurrect_post.sh).
+# Per-window free-text note, of ANY length.
+#
+# The note's TEXT lives in a file of its own, one per note, under a directory
+# derived from the store path ("${store}.d/<id>"). The live window user option
+# @sidetabs_note and the durable TSV store (@sidetabs-note-store, keyed by
+# session name + window name) both hold only that note's ID — never its text.
+#
+# That indirection is the whole point. tmux refuses any command longer than
+# ~16KB with "command too long", measured in BYTES (so a CJK note hits it three
+# times sooner than an ASCII one), which capped a note kept in the option no
+# matter how the cap was tuned. An id is ~11 characters, so the ceiling is gone
+# and a note file can be megabytes.
 #
 # The sidebar shows PRESENCE only — a sticky-note glyph on the row, expanded
-# mode only — never the text. Text is sanitized on the way in (control chars
-# stripped, spaces collapsed per line, capped) and newlines are ESCAPE-ENCODED
-# (\ -> \\, LF -> \n) so the stored form is always a single line that can never
-# break the TAB-separated render format or the TSV store — while the editor
-# still sees the note's real multi-line text, decoded on the way out.
+# mode only — never the text, which is why the render format can test the
+# option for non-emptiness and stay indifferent to what it holds.
+#
+# Text is sanitized on the way in: control chars die, trailing whitespace goes,
+# and blank lines at the very start and end are dropped. Tabs, indentation and
+# interior blank lines all survive — a long note holds indented lists and code,
+# and nothing downstream is whitespace-sensitive once the text is out of the
+# option and out of the TSV.
 #
 # Bound (sidebar-focused): @sidetabs-note-key opens the edit popup.
-# Usage: note.sh <set|clear|edit-popup|restore> [window_id] [text...]
-#   set <wid> <text...>  sanitize + encode + store + render (empty = clear)
-#   clear <wid>          unset the option and drop the store row
-#   edit-popup <wid>     $EDITOR on a temp file seeded with the DECODED note;
-#                        on exit the whole file is sanitized and re-encoded
+# Usage: note.sh <set|clear|edit-popup|restore|gc> [window_id] [text...]
+#   set <wid> <text...>  sanitize + store + render (empty = clear)
+#   clear <wid>          unset the option, delete the file, drop the store row
+#   edit-popup <wid>     $EDITOR on a temp file seeded with the note's text;
+#                        on exit the whole file becomes the note
 #   restore              re-seed live windows from the store (never clobbers)
+#   gc                   delete note files nothing references
 set -euo pipefail
 
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -30,30 +42,51 @@ US=$'\x1f'
 
 store_path() { get_tmux_option '@sidetabs-note-store' "$DEFAULT_NOTE_STORE"; }
 
-# encode_note <text> -> ENC. Escapes clean multi-line text into the single-line
-# STORED form: backslash first (so the newline escape it produces is not itself
-# re-escaped), then LF -> the two chars \n. The input is already free of
-# TAB/CR/other control chars, so the result is guaranteed single-line and
-# TAB-free — the invariant the render format and the TSV store depend on.
-encode_note() {
-    ENC="$1"
-    ENC="${ENC//\\/\\\\}"
-    ENC="${ENC//$'\n'/\\n}"
+# Text lives one file per note, in a directory derived from the store path so
+# the two move together when @sidetabs-note-store is repointed. Deriving it
+# from the store PATH rather than its dirname keeps two stores in one directory
+# from sharing a note pool — which gc would then resolve by deleting the other
+# store's files.
+notes_dir() { printf '%s.d' "$(store_path)"; }
+note_path() { printf '%s/%s' "$(notes_dir)" "$1"; }
+
+# A note id is the option's entire value and a bare filename. The character
+# class is the security boundary: it admits no '/' and no '..', so a hostile or
+# corrupt store row can never aim note_path outside the notes dir. The n1-
+# prefix is what lets a LEGACY inline-text value (see decode_note) be told apart
+# from an id without a version field in the store.
+valid_id() {
+    case "$1" in
+        n1-*[!A-Za-z0-9]*) return 1 ;;
+        n1-?*)             return 0 ;;
+        *)                 return 1 ;;
+    esac
 }
 
-# decode_note <encoded> -> DEC. The inverse, used ONLY to seed the editor.
+# new_id -> NEW_ID, with the (empty) file already created. mktemp is what makes
+# minting atomic: two concurrent sets can never settle on the same id.
+new_id() {
+    local d f
+    NEW_ID=""
+    d="$(notes_dir)"
+    mkdir -p "$d" 2>/dev/null || return 1
+    f="$(mktemp "$d/n1-XXXXXXXX" 2>/dev/null)" || return 1
+    case "${f##*/}" in
+        n1-*[!A-Za-z0-9]*) rm -f "$f" 2>/dev/null; return 1 ;;
+    esac
+    NEW_ID="${f##*/}"
+    return 0
+}
+
+# decode_note <encoded> -> DEC. LEGACY ONLY. Before notes moved to files the
+# option and the store held the text inline, escape-encoded to keep it on one
+# line (\ -> \\, LF -> \n). Such values are still readable, and convert to a
+# file the first time they are saved; nothing writes this form any more.
+#
 # Sequential replacement would corrupt an escaped backslash (\\n is a literal
 # backslash followed by "n", not a newline), so escaped backslashes are first
-# parked on a sentinel. US (0x1f) is safe: the stored form is control-char-free
+# parked on a sentinel. US (0x1f) is safe: the encoded form was control-char-free
 # by construction, so it can never contain one.
-#
-# Migration: rows written before notes were encoded are stored raw and are
-# indistinguishable from encoded ones, so a legacy note containing the literal
-# two chars \n decodes to a real newline (and \\ halves to \) the first time its
-# popup opens — and saving then persists the reinterpreted text, NOT the
-# original. Accepted: at the time encoding shipped this machine's store was
-# verified empty, so no such note existed anywhere. A version tag could remove
-# the ambiguity but isn't worth it for a store with zero legacy rows.
 decode_note() {
     DEC="$1"
     DEC="${DEC//\\\\/$US}"
@@ -61,56 +94,55 @@ decode_note() {
     DEC="${DEC//$US/\\}"
 }
 
-# Sanitize $1 (a raw, possibly multi-line editor buffer) into the global NOTE,
-# in the ENCODED form. Line endings are normalized to LF; then per line tabs
-# become spaces, every remaining control char is dropped, runs of spaces
-# collapse and the ends are trimmed. Leading/trailing blank lines go and runs of
-# blank lines squeeze to one, so paragraph breaks survive but the note can't be
-# padded out. The DECODED text is capped at NOTE_MAX_CHARS (the encoded form may
-# be a little longer — that is fine, it is not what the user counts).
-sanitize_note() {
-    local raw flat line clean blank=0
+# sanitize_file <in> <out>: normalize a raw editor buffer into the durable form.
+# Everything is streamed. The bash accumulation loop this replaced was O(n^2)
+# — 50KB took a second, so 200KB would have taken ~16 — and notes are now
+# unbounded.
+#
+# Stage order matters. NULs die FIRST, because a NUL reaching sed truncates the
+# line on BSD. CR is deliberately spared by that pass so the next two can tell
+# CRLF (strip the CR) from a lone CR (a line break in its own right); deleting
+# CR outright would silently join every line of an old-Mac file.
+#
+# The trailing `|| :` is load-bearing. Under `set -euo pipefail` a non-zero exit
+# from any stage (ENOSPC on <out> being the realistic one) fires errexit before
+# the `return 0` below is ever reached — which kills the script inside
+# edit-popup, whose EXIT trap then deletes the user's editor buffer. Swallowing
+# the status leaves an empty stage file, which apply_note reads as a clear
+# rather than destroying the buffer.
+sanitize_file() {
+    tr -d '\000-\010\013-\014\016-\037\177' < "$1" 2>/dev/null \
+        | sed -e 's/'$'\r''$//' 2>/dev/null \
+        | tr '\015' '\012' 2>/dev/null \
+        | awk '
+            # Trailing whitespace goes; LEADING whitespace stays.
+            { sub(/[[:space:]]+$/, "") }
+            # A blank line before the first real one is never counted, and a run
+            # after the last one is never flushed — so both edges are trimmed in
+            # this single pass while interior runs survive verbatim.
+            $0 == "" { if (started) pending++; next }
+            { while (pending > 0) { print ""; pending-- }
+              started = 1; print }
+          ' > "$2" 2>/dev/null || :
+    return 0
+}
 
-    raw="$1"
-    raw="${raw//$'\r\n'/$'\n'}"
-    raw="${raw//$'\r'/$'\n'}"
-
-    # Tabs -> space, drop every control char EXCEPT LF, squeeze space runs.
-    # tr -s can't cross a newline, so this is already per-line.
-    flat="$(printf '%s' "$raw" | tr '\011' ' ' | tr -d '\000-\011\013-\037' | tr -s ' ')"
-
-    clean=""
-    while IFS= read -r line; do
-        line="${line# }"; line="${line% }"
-        if [ -z "$line" ]; then
-            # Remember the gap instead of emitting it: trailing blanks then
-            # cost nothing, and a run of them still yields a single break.
-            if [ -n "$clean" ]; then blank=1; fi
-            continue
-        fi
-        if [ -z "$clean" ]; then
-            clean="$line"
-        elif [ "$blank" = "1" ]; then
-            clean="${clean}"$'\n\n'"$line"
-        else
-            clean="${clean}"$'\n'"$line"
-        fi
-        blank=0
-    done <<< "$flat"
-
-    if [ "${#clean}" -gt "$NOTE_MAX_CHARS" ]; then
-        clean="${clean:0:$NOTE_MAX_CHARS}"
-        # The cut can land on the whitespace/newlines the trimming above spared.
-        while :; do
-            case "$clean" in
-                *' '|*$'\n') clean="${clean%?}" ;;
-                *) break ;;
-            esac
-        done
+# seed_file <option value> <out>: write the note's CURRENT text to <out>.
+# An id reads its file; anything else is a legacy inline value and is decoded in
+# place. That legacy branch is the entire migration story — the value becomes a
+# file the next time it is saved, so no eager migration pass is needed.
+seed_file() {
+    local v="$1" out="$2" p
+    : > "$out" 2>/dev/null || return 0
+    [ -n "$v" ] || return 0
+    if valid_id "$v"; then
+        p="$(note_path "$v")"
+        [ -f "$p" ] && { cat "$p" > "$out" 2>/dev/null || true; }
+    else
+        decode_note "$v"
+        printf '%s\n' "$DEC" > "$out" 2>/dev/null || true
     fi
-
-    encode_note "$clean"
-    NOTE="$ENC"
+    return 0
 }
 
 # Sets SNAME/WNAME for window $1 (empty if it is gone). Tabs are squashed the
@@ -151,7 +183,7 @@ store_lock() {
 # is what keeps two concurrent rewrites from clobbering each other. Every
 # failure path is best-effort: an unwritable store must not abort the live
 # state change.
-# store_write <sname> <wname> [note]   (no note = delete only)
+# store_write <sname> <wname> [note_id]   (no id = delete only)
 store_write() {
     local f lockd held=0
     f="$(store_path)"
@@ -165,7 +197,7 @@ store_write() {
 
 # The critical section of store_write: everything between reading the store and
 # replacing it. Split out so every early return still releases the lock.
-# store_rewrite <storefile> <sname> <wname> [note]
+# store_rewrite <storefile> <sname> <wname> [note_id]
 store_rewrite() {
     local f tmpf
     f="$1"; shift
@@ -183,19 +215,43 @@ store_rewrite() {
     mv "$tmpf" "$f" 2>/dev/null || rm -f "$tmpf" 2>/dev/null || true
 }
 
-# apply_note <window_id> <raw text>: the shared set/clear body. An empty result
-# after sanitizing is a clear — "set it to nothing" and "clear it" are the same
-# user intent, and it's the only sane reading of an emptied editor buffer.
+# apply_note <window_id> <srcfile>: the shared set/clear body. It takes a FILE,
+# never a string, so note text is never held in a shell variable and can never
+# reach a tmux command line.
+#
+# An empty result after sanitizing is a clear — "set it to nothing" and "clear
+# it" are the same user intent, and it is the only sane reading of an emptied
+# editor buffer.
+#
+# The window's EXISTING id is reused on overwrite. That keeps the option value
+# stable, makes the write a single rename, and means routine editing leaves no
+# orphan files behind at all.
 apply_note() {
-    local wid="$1" raw="$2"
-    sanitize_note "$raw"
+    local wid="$1" src="$2" cur id d stage
+    d="$(notes_dir)"
+    mkdir -p "$d" 2>/dev/null || return 0
+    # Stage inside the notes dir so the mv below is same-filesystem, hence
+    # atomic: a reader never sees a half-written note.
+    stage="$(mktemp "$d/.stage-XXXXXXXX" 2>/dev/null)" || return 0
+    sanitize_file "$src" "$stage"
     window_key "$wid"
-    if [ -z "$NOTE" ]; then
+    cur="$(get_window_option "$wid" "$NOTE_OPTION" "")"
+    if [ ! -s "$stage" ]; then
+        rm -f "$stage" 2>/dev/null
+        valid_id "$cur" && rm -f "$(note_path "$cur")" 2>/dev/null
         unset_window_option "$wid" "$NOTE_OPTION"
         [ -n "$WNAME" ] && store_write "$SNAME" "$WNAME"
     else
-        set_window_option "$wid" "$NOTE_OPTION" "$NOTE"
-        [ -n "$WNAME" ] && store_write "$SNAME" "$WNAME" "$NOTE"
+        if valid_id "$cur"; then
+            id="$cur"
+        else
+            new_id || { rm -f "$stage" 2>/dev/null; return 0; }
+            id="$NEW_ID"
+        fi
+        mv "$stage" "$(note_path "$id")" 2>/dev/null \
+            || { rm -f "$stage" 2>/dev/null; return 0; }
+        set_window_option "$wid" "$NOTE_OPTION" "$id"
+        [ -n "$WNAME" ] && store_write "$SNAME" "$WNAME" "$id"
     fi
     "$CURRENT_DIR/refresh.sh" force
 }
@@ -206,14 +262,20 @@ set)
     [ -z "$WID" ] && WID="$(tmux display-message -p '#{window_id}' 2>/dev/null)"
     [ -z "$WID" ] && exit 0
     shift 2 2>/dev/null || shift $#
-    apply_note "$WID" "$*"
+    SRC="$(mktemp "${TMPDIR:-/tmp}/sidetabs_noteset.XXXXXX")" || exit 0
+    trap 'rm -f "$SRC" 2>/dev/null' EXIT INT TERM HUP
+    printf '%s\n' "$*" > "$SRC"
+    apply_note "$WID" "$SRC"
     ;;
 
 clear)
     WID="${2:-}"
     [ -z "$WID" ] && WID="$(tmux display-message -p '#{window_id}' 2>/dev/null)"
     [ -z "$WID" ] && exit 0
-    apply_note "$WID" ""
+    SRC="$(mktemp "${TMPDIR:-/tmp}/sidetabs_noteclr.XXXXXX")" || exit 0
+    trap 'rm -f "$SRC" 2>/dev/null' EXIT INT TERM HUP
+    : > "$SRC"
+    apply_note "$WID" "$SRC"
     ;;
 
 edit-popup)
@@ -225,16 +287,11 @@ edit-popup)
     [ -z "$WID" ] && exit 0
     TMPF="$(mktemp "${TMPDIR:-/tmp}/sidetabs_note.XXXXXX")" || exit 0
     trap 'rm -f "$TMPF" 2>/dev/null' EXIT INT TERM HUP
-    CUR="$(get_window_option "$WID" "$NOTE_OPTION" "")"
-    # The option holds the encoded single line; the editor gets the real text.
-    if [ -n "$CUR" ]; then
-        decode_note "$CUR"
-        printf '%s\n' "$DEC" > "$TMPF"
-    fi
+    seed_file "$(get_window_option "$WID" "$NOTE_OPTION" "")" "$TMPF"
     ED="${EDITOR:-${VISUAL:-vi}}"
     # Unquoted so an EDITOR carrying flags ("code -w") still works.
     $ED "$TMPF" || true
-    apply_note "$WID" "$(cat "$TMPF" 2>/dev/null || true)"
+    apply_note "$WID" "$TMPF"
     ;;
 
 restore)
@@ -253,6 +310,11 @@ restore)
         note="$(awk -F"$TAB" -v s="$sname" -v w="$wname" \
             '$1 == s && $2 == w { print $3; exit }' "$STORE" 2>/dev/null)"
         [ -n "$note" ] || continue
+        # A row pointing at a deleted note file would set the option and light
+        # the row's glyph for a note with no text. Drop it instead.
+        if valid_id "$note" && [ ! -f "$(note_path "$note")" ]; then
+            continue
+        fi
         applied="${applied}${key}${US}"
         if [ -n "$(get_window_option "$wid" "$NOTE_OPTION" "")" ]; then
             continue
@@ -263,5 +325,42 @@ restore)
     if [ "$changed" = "1" ]; then
         "$CURRENT_DIR/refresh.sh" force
     fi
+    ;;
+
+gc)
+    # Sweep note files that neither the durable store nor any live window points
+    # at. Deliberately a COMMAND and never a timer: an orphan costs a few KB,
+    # while deleting a wanted note is unrecoverable. Routine editing produces no
+    # orphans at all anyway, because apply_note reuses a window's existing id.
+    #
+    # The reference set is the UNION of both sources, because either alone is
+    # incomplete: a window renamed since its note was set is referenced only by
+    # the live option (its store row still sits under the old name), and a note
+    # whose window is gone is referenced only by the store.
+    NDIR="$(notes_dir)"
+    [ -d "$NDIR" ] || exit 0
+    STORE="$(store_path)"
+    REFS="$US"
+    if [ -f "$STORE" ]; then
+        while IFS= read -r rid; do
+            [ -n "$rid" ] && REFS="${REFS}${rid}${US}"
+        done <<< "$(awk -F"$TAB" 'NF>=3 && $3 != "" { print $3 }' "$STORE" 2>/dev/null || true)"
+    fi
+    while IFS= read -r rid; do
+        [ -n "$rid" ] && REFS="${REFS}${rid}${US}"
+    done <<< "$(tmux list-windows -a -F "#{${NOTE_OPTION}}" 2>/dev/null || true)"
+    removed=0
+    for f in "$NDIR"/n1-*; do
+        [ -f "$f" ] || continue
+        fid="${f##*/}"
+        valid_id "$fid" || continue
+        case "$REFS" in *"${US}${fid}${US}"*) continue ;; esac
+        rm -f "$f" 2>/dev/null && removed=$((removed + 1))
+    done
+    # Staging files are transient; one older than a day is debris from a save
+    # that was killed mid-write. The age guard is what keeps this from racing a
+    # save that is in flight right now.
+    find "$NDIR" -maxdepth 1 -name '.stage-*' -type f -mtime +1 -exec rm -f {} \; 2>/dev/null || true
+    echo "removed $removed orphaned note file(s)"
     ;;
 esac
