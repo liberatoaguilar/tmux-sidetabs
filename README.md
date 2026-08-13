@@ -113,7 +113,7 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-timer-restore` | `on` | `off` to disable re-seeding timers from the event log — both after a tmux-resurrect restore and via the boot-time `client-attached` fallback |
 | `@sidetabs-note-key` | `M-n` | Key to open the note editor popup for the current window (`none` to disable) |
 | `@sidetabs-note-icon` | (sticky note) | Glyph shown on rows that have a note. Any string works — set it to something ASCII if your font lacks Nerd Font glyphs. A multi-character icon is measured and takes its columns from the window name, so a long one leaves less room for the name |
-| `@sidetabs-note-store` | `~/.local/share/tmux-sidetabs/notes.tsv` | Path to the durable note store (TSV: session, window name, note — one row per noted window; newlines in the note are stored escaped as `\n`, so a row is always one line) |
+| `@sidetabs-note-store` | `~/.local/share/tmux-sidetabs/notes.tsv` | Path to the durable note index (TSV: session, window name, note id — one row per noted window). Note **text** lives one file per note in `<store>.d/`, so notes have no length limit |
 | `@sidetabs-agent-status` | `on` | `off` stops any new agent signal being raised **and** hides any that is already showing (see [Agent status](#agent-status)) — the agent-side hooks can stay installed, they just stop costing anything. Flipping it off mid-turn is safe: a row that was lit at the time goes quiet immediately, and visiting the tab still clears the stored state |
 | `@sidetabs-agent-done-fg` | `#a3be8c` | Color of the ✓ glyph on a finished agent's row (nord14) |
 | `@sidetabs-timer-log` | `~/.local/share/tmux-sidetabs/timelog.tsv` | Path to the timer event log (TSV v3: timestamp, event type, interval start, interval duration, total, session, window, window_id, cwd, tag; events are `start` / `resume` / `pause` / `auto-pause` / `auto-resume` / `adjust` / `cancel` / `reset` / `restore`. `tag` is the window's `@sidetabs_timer_tag` at write time, or `-` when untagged; readers also accept older 9-col (v2, no tag) and legacy 6-col rows) |
@@ -331,20 +331,33 @@ original `C-h` / `C-j` / `C-k` bindings.)
 - Timers use wall-clock time: laptop sleep counts toward elapsed time. The timer
   continues even when the sidebar is collapsed.
 - **Notes**: `M-n` (sidebar focused) opens the current window's note in a popup
-  running your `$EDITOR`. **Multi-line notes are preserved** — reopening the
-  popup gives you the note back exactly as you wrote it. The buffer is stripped
-  of control characters, spaces collapse and trim per line, blank-line runs
-  squeeze to a single break, and the text is capped at 200 characters. Saving an
-  empty buffer clears the note. Newlines are escape-encoded (`\` → `\\`, newline
-  → `\n`) in the stored form, so the window option and the TSV store rows stay
-  single-line. The row shows the note's **presence** only — a sticky-note glyph
-  after the window flags, never the text — and only in expanded mode (the
-  collapsed strip has no room for it). Notes survive restarts on their own: every
-  edit writes through to `@sidetabs-note-store`, and the post-restore hook
-  re-seeds live windows from it, matched by session + window *name* (so renaming
-  a window detaches its stored note until you next edit it, and with duplicate
-  names only the lowest-indexed window is seeded). A window that already has a
-  note is never overwritten by a restore.
+  running your `$EDITOR`. **Notes have no length limit**, and multi-line text,
+  indentation and tabs are all preserved — reopening the popup gives you the note
+  back exactly as you wrote it. Only control characters, trailing whitespace and
+  blank lines at the very start and end are stripped. Saving an empty buffer
+  clears the note.
+
+  The text lives in a file of its own (`<store>.d/<note-id>`); the window option
+  and the TSV store hold only that id. That indirection is what lifts the limit —
+  tmux rejects any command over ~16KB (`command too long`, counted in *bytes*, so
+  a CJK note hits it three times sooner), which capped a note kept inline in the
+  option no matter how the cap was tuned. The row shows the note's **presence**
+  only — a sticky-note glyph after the window flags, never the text — and only in
+  expanded mode (the collapsed strip has no room for it), so note text never
+  reaches a render format.
+
+  Notes survive restarts on their own: every edit writes through to
+  `@sidetabs-note-store`, and the post-restore hook re-seeds live windows from
+  it, matched by session + window *name* (so renaming a window detaches its
+  stored note until you next edit it, and with duplicate names only the
+  lowest-indexed window is seeded). A window that already has a note is never
+  overwritten by a restore.
+
+  Notes written before this store existed were kept inline in the window option;
+  they still open normally and convert to a file the first time you save them.
+  `scripts/note.sh gc` deletes note files that no store row and no live window
+  references — nothing runs it automatically, since an orphan costs a few KB and
+  deleting a wanted note does not.
 
 ## tmux-resurrect integration
 
