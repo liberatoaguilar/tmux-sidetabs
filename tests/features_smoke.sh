@@ -141,8 +141,8 @@ nrows="$(lognorows)"
 ev="$(lastrow | cut -f2)"
 [ "$ev" = "start" ] || fail "expected start event, got '$ev'"
 nf="$(awk -F'\t' '!/^#/{print NF}' "$TMPLOG" | sort -u)"
-[ "$nf" = "9" ] || fail "expected 9 TSV fields on every row, got: $nf"
-pass "timer start logs 1 row (event=start, 9 fields)"
+[ "$nf" = "10" ] || fail "expected 10 TSV fields on every row, got: $nf"
+pass "timer start logs 1 row (event=start, 10 fields)"
 
 # 6. Live tick renders.
 sleep 2
@@ -264,7 +264,7 @@ if echo "$cap" | grep -Eq '[0-9][0-9]:[0-9][0-9]:[0-9][0-9]'; then
   fail "timer line still rendered after reset"
 fi
 nf="$(awk -F'\t' '!/^#/{print NF}' "$TMPLOG" | sort -u)"
-[ "$nf" = "9" ] || fail "expected 9 TSV fields on every logged row, got: $nf"
+[ "$nf" = "10" ] || fail "expected 10 TSV fields on every logged row, got: $nf"
 pass "reset clears state, logs reset row (total_s=0), display cleared"
 
 # 13. Collapsed hides the timer line but state keeps evolving under the focus

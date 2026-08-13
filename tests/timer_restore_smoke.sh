@@ -16,12 +16,12 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*"; exit 1; }
 pass() { echo "PASS: $*"; }
 winopt() { tmux -L "$SOCKET" show-option -w -t "$1" -qv "$2"; }
-row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@" >> "$TMPLOG"; }
+row() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\n' "$@" >> "$TMPLOG"; }  # v3: col10 tag defaults to "-"
 lognorows() { grep -vc '^#' "$TMPLOG" || true; }
 
 # --- Synthetic history (timestamps are irrelevant to the replay; the total in
 # --- col5 is authoritative at every event) ------------------------------------
-printf '#ts\tevent\tinterval_start\tinterval_s\ttotal_s\tsession\twindow\twindow_id\tcwd\n' > "$TMPLOG"
+printf '#ts\tevent\tinterval_start\tinterval_s\ttotal_s\tsession\twindow\twindow_id\tcwd\ttag\n' > "$TMPLOG"
 # alpha: ran, manual pause at 100s, adjusted to 160s -> pause/160 (sticky)
 row t1 start       -  0   0   main alpha @90 /tmp
 row t2 pause       t1 100 100 main alpha @90 /tmp
@@ -89,7 +89,7 @@ nres="$(awk -F'\t' '!/^#/ && $2=="restore"' "$TMPLOG" | wc -l | tr -d ' ')"
 awk -F'\t' '!/^#/ && $2=="restore" && $7=="alpha" && $5=="160"' "$TMPLOG" | grep -q . || fail "no restore row for alpha/160"
 awk -F'\t' '!/^#/ && $2=="restore" && $7=="beta" && $5=="50"' "$TMPLOG" | grep -q . || fail "no restore row for beta/50"
 nf="$(awk -F'\t' '!/^#/{print NF}' "$TMPLOG" | sort -u)"
-[ "$nf" = "9" ] || fail "expected 9 TSV fields on every row, got: $nf"
+[ "$nf" = "10" ] || fail "expected 10 TSV fields on every row, got: $nf"
 pass "restore rows logged (2, schema intact)"
 
 # --- 6. Second run is a no-op ------------------------------------------------

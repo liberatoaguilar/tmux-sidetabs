@@ -11,9 +11,12 @@
 #   pause  - manually paused (C-t); never auto-resumes, only C-t resumes it
 #   unset  - no timer
 #
-# Event log v2 (@sidetabs-timer-log, TSV, one row per event, `#` header line):
-#   ts_iso  event  interval_start_iso|-  interval_s  total_s  session  window_name  window_id  cwd
-# Events: start resume pause auto-pause auto-resume adjust cancel reset.
+# Event log v3 (@sidetabs-timer-log, TSV, one row per event, `#` header line):
+#   ts_iso  event  interval_start_iso|-  interval_s  total_s  session  window_name  window_id  cwd  tag
+# tag is the window's @sidetabs_timer_tag at write time, or `-` when untagged.
+# Every reader (this script, timer_restore.sh, the CLI replay) must also accept
+# v2 (9-col, no tag) and legacy 6-col rows; v2 rows are treated as tag `-`.
+# Events: start resume pause auto-pause auto-resume adjust cancel reset restore.
 # Logging is best-effort: an unwritable log never aborts a state transition.
 #
 # Bound (sidebar-focused): @sidetabs-timer-key toggle, @sidetabs-timer-menu-key menu.
@@ -39,11 +42,11 @@ num_or() { case "$1" in ''|*[!0-9]*) echo "$2" ;; *) echo "$1" ;; esac; }
 
 # log_event <event> <interval_start_epoch|-> <interval_s> <total_s>
 log_event() {
-    local event="$1" istart="$2" is="$3" total="$4" logfile ts istart_iso cwd names sname wname
+    local event="$1" istart="$2" is="$3" total="$4" logfile ts istart_iso cwd names sname wname tag
     logfile="$(get_tmux_option '@sidetabs-timer-log' "$DEFAULT_TIMER_LOG")"
     mkdir -p "$(dirname "$logfile")" 2>/dev/null || return 0
     if [ ! -f "$logfile" ]; then
-        printf '#ts\tevent\tinterval_start\tinterval_s\ttotal_s\tsession\twindow\twindow_id\tcwd\n' \
+        printf '#ts\tevent\tinterval_start\tinterval_s\ttotal_s\tsession\twindow\twindow_id\tcwd\ttag\n' \
             >> "$logfile" 2>/dev/null || return 0
     fi
     ts="$(epoch_to_iso "$(date +%s)")"
@@ -54,8 +57,14 @@ log_event() {
     names="$(tmux display-message -p -t "$WID" "#{session_name}${TAB}#{window_name}" 2>/dev/null)"
     sname="${names%%"$TAB"*}"; wname="${names#*"$TAB"}"
     cwd="${cwd//$TAB/ }"; sname="${sname//$TAB/ }"; wname="${wname//$TAB/ }"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$ts" "$event" "$istart_iso" "$is" "$total" "$sname" "$wname" "$WID" "$cwd" \
+    # Tag read once per event (this fires on every auto-hold/auto-resume tick,
+    # so no loop, no second show-option). Strip TABs and other control chars —
+    # it lands in a TSV column and, per C7, may be interpolated into a menu.
+    tag="$(get_window_option "$WID" "$TIMER_TAG_OPTION" "-")"
+    tag="$(printf '%s' "$tag" | tr '\011' ' ' | tr -d '\000-\037' | tr -s ' ')"
+    [ -z "$tag" ] && tag="-"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$ts" "$event" "$istart_iso" "$is" "$total" "$sname" "$wname" "$WID" "$cwd" "$tag" \
         >> "$logfile" 2>/dev/null || return 0
 }
 
