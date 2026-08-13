@@ -201,12 +201,12 @@ Delete `sanitize_note` (lines 64-114) and put this in its place:
 # whitespace-sensitive any more (the text no longer passes through the TSV store
 # or a render format). Interior blank runs are kept verbatim for the same
 # reason; the old squeeze existed to stop a 200-char budget being padded out.
-# The trailing `|| :` is load-bearing, not decoration. Under `set -euo pipefail`
-# a non-zero exit from ANY stage (ENOSPC writing <out> is the realistic one)
-# fires errexit before the `return 0` below is ever reached — which kills the
-# script inside edit-popup, whose EXIT trap then deletes the user's editor
-# buffer. Swallowing the status turns a failed save into an empty stage file,
-# which apply_note reads as "no change worth making" and leaves the note alone.
+# Failure is REPORTED, never swallowed, and the OR-list is what keeps errexit
+# from firing on the way out. Swallowing it would be actively destructive: a
+# pipeline that died partway (ENOSPC on <out> is the realistic case) leaves an
+# empty stage file, apply_note reads empty as "the user emptied the buffer", and
+# a transient write error deletes a note the user still has. `apply_note` pairs
+# this with an early bail (see its step) so a failed sanitize is a NO-OP.
 sanitize_file() {
     tr -d '\000-\010\013-\014\016-\037\177' < "$1" 2>/dev/null \
         | sed -e 's/'$'\r''$//' 2>/dev/null \
@@ -217,7 +217,7 @@ sanitize_file() {
             $0 == "" { if (started) pending++; next }
             { while (pending > 0) { print ""; pending-- }
               started = 1; print }
-          ' > "$2" 2>/dev/null || :
+          ' > "$2" 2>/dev/null || return 1
     return 0
 }
 ```
@@ -269,7 +269,10 @@ apply_note() {
     # Stage inside the notes dir so the mv below is same-filesystem, hence
     # atomic: a reader never sees a half-written note.
     stage="$(mktemp "$d/.stage-XXXXXXXX" 2>/dev/null)" || return 0
-    sanitize_file "$src" "$stage"
+    # A failed sanitize must be a NO-OP, not a clear. Falling through would hand
+    # the empty-means-clear test below a stage file that is empty only because
+    # the write died, and delete a note the user never asked to lose.
+    sanitize_file "$src" "$stage" || { rm -f "$stage" 2>/dev/null; return 0; }
     window_key "$wid"
     cur="$(get_window_option "$wid" "$NOTE_OPTION" "")"
     if [ ! -s "$stage" ]; then
