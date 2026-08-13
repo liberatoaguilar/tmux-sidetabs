@@ -58,6 +58,77 @@ epoch_to_iso() {
         || date -r "$1" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null
 }
 
+# Days in (year, month): fixed table + Gregorian leap rule for Feb. Only used
+# to clamp cycle_start's reset_day; y/m are already base-10-forced by the caller.
+cycle_days_in_month() {
+    local y="$1" m="$2"
+    case "$m" in
+        1|3|5|7|8|10|12) echo 31 ;;
+        4|6|9|11) echo 30 ;;
+        2)
+            if (( (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 )); then
+                echo 29
+            else
+                echo 28
+            fi
+            ;;
+        *) echo 30 ;;  # unreachable: caller only ever passes 1-12
+    esac
+}
+
+# cycle_start <reset_day> -> ISO YYYY-MM-DD of the most recent billing-cycle
+# boundary <= today, local wall-clock time. reset_day is a day-of-month
+# (1-31, leading zeros tolerated; clamped to the target month's real length —
+# 31 lands on Feb 28/29). reset_day that is 0, empty, or not a plain integer
+# means "never auto-reset" and prints nothing on stdout — always rc 0, so a
+# caller can safely do `cs=$(cycle_start "$reset_day")` under `set -e`.
+#
+# Deliberately avoids GNU `date -d '-1 month'` / BSD `date -v-1m` (neither
+# runs on the other): the previous-month step is plain shell integer
+# arithmetic on the y/m/d already pulled out of an ISO date, the same
+# dual-path-free spirit as epoch_to_iso's GNU-then-BSD fallback above (reused
+# here to turn "now" into today's date in local time).
+#
+# Test hook: SIDETABS_TIMER_TODAY=YYYY-MM-DD overrides "today" (validated;
+# malformed values are ignored and the real clock wins). Documented here per
+# the search.sh:7-8 convention — run-shell does not inherit the test shell's
+# exports, so tests must pass it inline on the run-shell command string.
+cycle_start() {
+    local reset_day="$1" re today y m d cur_dim boundary py pm pdim
+
+    re='^[0-9]+$'
+    [[ "$reset_day" =~ $re ]] || return 0
+    reset_day=$((10#$reset_day))
+    { [ "$reset_day" -ge 1 ] && [ "$reset_day" -le 31 ]; } || return 0
+
+    today="${SIDETABS_TIMER_TODAY:-}"
+    re='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+    if [[ ! "$today" =~ $re ]]; then
+        today="$(epoch_to_iso "$(date +%s)")"
+        today="${today:0:10}"
+    fi
+
+    y="${today%%-*}"; d="${today##*-}"
+    m="${today#*-}"; m="${m%-*}"
+    y=$((10#$y)); m=$((10#$m)); d=$((10#$d))
+
+    cur_dim="$(cycle_days_in_month "$y" "$m")"
+    boundary="$reset_day"; [ "$boundary" -gt "$cur_dim" ] && boundary="$cur_dim"
+
+    if [ "$d" -ge "$boundary" ]; then
+        printf '%04d-%02d-%02d\n' "$y" "$m" "$boundary"
+        return 0
+    fi
+
+    # Boundary hasn't happened yet this month: the most recent one was last
+    # month's (clamped to ITS length, independently of this month's clamp).
+    pm=$((m - 1)); py="$y"
+    if [ "$pm" -lt 1 ]; then pm=12; py=$((y - 1)); fi
+    pdim="$(cycle_days_in_month "$py" "$pm")"
+    boundary="$reset_day"; [ "$boundary" -gt "$pdim" ] && boundary="$pdim"
+    printf '%04d-%02d-%02d\n' "$py" "$pm" "$boundary"
+}
+
 # Returns the pane_id of the sidetab pane in a window, or empty.
 find_sidetab_pane() {
     local window_id="$1"

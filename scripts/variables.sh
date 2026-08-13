@@ -9,6 +9,12 @@ RENDER_PID_OPTION="@sidetabs_render_pid"
 # resurrect post-restore hook clears it and rebuilds clean sidebars.
 RESTORING_OPTION="@sidetabs_restoring"
 
+# Global flag, one per server generation (it dies with the server, exactly like
+# the timer state it guards): "1" once a timer restore has run here. The
+# client-attached fallback in sidetabs.tmux stands down while it is set, so the
+# fallback and a tmux-resurrect restore never both seed the same generation.
+TIMER_RESTORED_OPTION="@sidetabs_timer_restored"
+
 # Per-session user options
 COLLAPSED_OPTION="@sidetabs_collapsed"
 WIDTH_OPTION="@sidetabs_width"                   # current expanded width (synced)
@@ -56,6 +62,8 @@ FLAG_OPTION="@sidetabs_flag"                # 1-based index into @sidetabs-flag-
 TIMER_STATE_OPTION="@sidetabs_timer_state"  # "run" | "pause" | unset
 TIMER_START_OPTION="@sidetabs_timer_start"  # epoch seconds when the running interval started
 TIMER_ACC_OPTION="@sidetabs_timer_acc"      # accumulated seconds from completed intervals
+TIMER_TAG_OPTION="@sidetabs_timer_tag"      # opaque attribution tag (customer[:project]); unset = untagged
+TIMER_LAST_RESET_OPTION="@sidetabs_timer_last_reset" # ISO date of the cycle start last reset for
 NOTE_OPTION="@sidetabs_note"                # free-text note; presence shows a glyph on the row
 
 # Agent status. Coding agents (Claude Code, codex, opencode) call
@@ -101,6 +109,7 @@ DEFAULT_TIMER_MENU_KEY="M-t"
 DEFAULT_TIMER_AUTOFOCUS="on"   # auto pause/resume timers on tab focus
 DEFAULT_TIMER_RESTORE="on"     # re-seed timers from the event log after a restore
 DEFAULT_TIMER_LOG="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/timelog.tsv"
+DEFAULT_TIMER_TAGS_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/tags.tsv"
 
 # Notes. Unlike flags/timers the note text is durable on its own: every set/clear
 # writes through to a TSV store keyed by (session name, window name), which
