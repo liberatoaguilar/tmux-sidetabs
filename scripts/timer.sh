@@ -180,7 +180,21 @@ cycle_check() {
         # marker, so folding a long head-down interval into the reset row
         # alone would drop it from the cycle it belongs to.
         fold_interval
-        log_event auto-pause "$FOLD_START" "$FOLD_DUR" "$acc"
+        if [ "$CMD" = "cancel" ]; then
+            # The caller is about to DISCARD this interval. Logging it as
+            # `auto-pause` would bill the very seconds cancel exists to throw
+            # away — the CLI replay bills pause/auto-pause and ignores cancel —
+            # so a `cancel` that happened to land on a billing boundary became a
+            # silent OVERCOUNT, while the cancel arm below then discarded a
+            # zero-length interval and the sidebar showed 0 as if it had worked.
+            # Cancel's primary use is "throw away the interval I left running
+            # overnight", which is exactly when a boundary is crossed.
+            # Unfold it too, so the `reset` row's cleared total excludes it.
+            acc=$((acc - FOLD_DUR))
+            log_event cancel "$FOLD_START" "$FOLD_DUR" "$acc"
+        else
+            log_event auto-pause "$FOLD_START" "$FOLD_DUR" "$acc"
+        fi
     fi
     log_event reset - "$acc" 0   # col4 = cleared total, logged before zeroing
     acc=0
@@ -250,8 +264,18 @@ acc="$(num_or "$(get_window_option "$WID" "$TIMER_ACC_OPTION" 0)" 0)"
 # restore-state is deliberately absent: it seeds a blank slate from the log and
 # gets its own derived last_reset (C6); resetting before that lands would zero
 # a total the restore is in the middle of putting back.
+#
+# `menu` is deliberately absent too, even though it is a user interaction: it
+# mutates no timer state, and running the check here committed the boundary
+# fold BEFORE the user had chosen anything — so merely opening the menu banked
+# the open interval as a billable `auto-pause` row, and then picking "cancel
+# interval (keep total)" discarded a zero-length one. Every mutating action
+# reachable from the menu runs the check itself (cancel and adjust are in this
+# list; reset folds into its own reset row), and the focus engine's cycle_due
+# arm still delivers C5's lazy reset to windows nobody interacts with, so
+# nothing is lost by opening a menu and escaping.
 case "$CMD" in
-    toggle|cancel|adjust|auto-hold|auto-resume|menu|cycle-check) cycle_check ;;
+    toggle|cancel|adjust|auto-hold|auto-resume|cycle-check) cycle_check ;;
 esac
 
 case "$CMD" in

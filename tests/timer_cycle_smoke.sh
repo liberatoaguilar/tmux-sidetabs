@@ -7,7 +7,8 @@
 # running through the reset), untagged windows and reset_day 0 tags never
 # firing, day-31 clamping onto Feb 28 in a non-leap year, the focus-tick
 # delivery path (timer_focus.sh, no toggle/cycle-check call from the test),
-# and same-day idempotence.
+# same-day idempotence, and a `cancel` that lands ON a boundary still
+# discarding its interval instead of banking it as billable seconds.
 #
 # Dates are faked via SIDETABS_TIMER_TODAY, inline in every run-shell command
 # string — run-shell executes in the tmux server's own environment and does
@@ -230,5 +231,85 @@ run "$PLUGIN_DIR/scripts/timer.sh auto-resume $wheld"
 [ "$(resets_for heldwin)" = "1" ] || fail "heldwin: auto-resume logged another reset"
 pass "a held window that crossed a boundary still auto-resumes into the new cycle"
 run "$PLUGIN_DIR/scripts/timer.sh toggle $wheld"   # leave nothing running behind us
+
+# =============================================================================
+# 10. `cancel` ACROSS a boundary must still discard the interval. cancel exists
+#     to throw away time that was never worked ("the timer I left running
+#     overnight"), which is precisely when a boundary gets crossed. cycle_check
+#     runs before the cancel arm, so a fold logged as `auto-pause` there would
+#     BILL those seconds — the CLI replay bills pause/auto-pause and ignores
+#     cancel — while the cancel arm then discarded a zero-length interval and
+#     the sidebar showed 0, making the cancel look like it worked. Silent
+#     overcount, the mirror of the undercount C9 refuses.
+#
+#     The invariant asserted is the billing one, not a row shape: the sum of
+#     interval seconds over this window's BILLABLE closing rows (pause /
+#     auto-pause) must be 0, while the boundary itself still fired.
+#     No new-window/select-window inside this section: either would fire the
+#     focus engine, whose real-clock auto-hold would close the interval and
+#     leave the dated cancel below testing nothing.
+# =============================================================================
+billable_secs_for() {
+    awk -F'\t' -v w="$1" '!/^#/ && $7==w && ($2=="pause" || $2=="auto-pause") {s+=$4} END {print s+0}' "$TMPLOG"
+}
+wcan="$(newwin cancelwin)"
+run "$PLUGIN_DIR/scripts/tag_set.sh $wcan cust-A"    # reset_day 15
+run "SIDETABS_TIMER_TODAY=2026-07-20 '$PLUGIN_DIR/scripts/timer.sh' cycle-check $wcan"   # seeds 2026-07-15
+[ "$(winopt "$wcan" @sidetabs_timer_last_reset)" = "2026-07-15" ] \
+    || fail "cancelwin: seeding failed: '$(winopt "$wcan" @sidetabs_timer_last_reset)'"
+run "$PLUGIN_DIR/scripts/timer.sh toggle $wcan"     # real clock: 07-15 is not stale yet
+[ "$(winopt "$wcan" @sidetabs_timer_state)" = "run" ] || fail "cancelwin: expected running before the cancel"
+sleep 2                                             # accrue a non-zero interval to be discarded
+
+# The real flow reaches cancel through the timer menu, so opening the menu must
+# not commit the boundary fold before the user has chosen anything — `menu` is
+# not in the cycle_check dispatch list for exactly this reason. Asserted via the
+# MENU_PRINT seam, which still goes through dispatch (an overlay menu never
+# lands in capture-pane output).
+mstart="$(winopt "$wcan" @sidetabs_timer_start)"
+run "SIDETABS_TIMER_TODAY=2026-08-20 SIDETABS_TIMER_MENU_PRINT=1 '$PLUGIN_DIR/scripts/timer.sh' menu $wcan > /dev/null"
+[ "$(resets_for cancelwin)" = "0" ] \
+    || fail "cancelwin: merely opening the menu committed a boundary reset"
+[ "$(billable_secs_for cancelwin)" = "0" ] \
+    || fail "cancelwin: opening the menu banked the open interval as billable seconds"
+[ "$(winopt "$wcan" @sidetabs_timer_state)" = "run" ] \
+    || fail "cancelwin: opening the menu changed state to '$(winopt "$wcan" @sidetabs_timer_state)'"
+[ "$(winopt "$wcan" @sidetabs_timer_start)" = "$mstart" ] \
+    || fail "cancelwin: opening the menu rewrote the live interval start"
+
+run "SIDETABS_TIMER_TODAY=2026-08-20 '$PLUGIN_DIR/scripts/timer.sh' cancel $wcan"
+
+[ "$(billable_secs_for cancelwin)" = "0" ] \
+    || fail "cancelwin: a cancelled interval was billed as pause/auto-pause seconds: $(billable_secs_for cancelwin)"
+[ "$(resets_for cancelwin)" = "1" ] \
+    || fail "cancelwin: the boundary reset did not fire, got $(resets_for cancelwin) reset rows"
+[ "$(winopt "$wcan" @sidetabs_timer_last_reset)" = "2026-08-15" ] \
+    || fail "cancelwin: last_reset not advanced: '$(winopt "$wcan" @sidetabs_timer_last_reset)'"
+[ "$(winopt "$wcan" @sidetabs_timer_state)" = "pause" ] \
+    || fail "cancelwin: cancel left state '$(winopt "$wcan" @sidetabs_timer_state)', want pause"
+[ "$(winopt "$wcan" @sidetabs_timer_acc)" = "0" ] \
+    || fail "cancelwin: total not zeroed by the boundary reset: '$(winopt "$wcan" @sidetabs_timer_acc)'"
+[ -z "$(winopt "$wcan" @sidetabs_timer_start)" ] \
+    || fail "cancelwin: a cancelled timer must have no live interval start"
+# D7's crash-window guard still holds: the `reset` is followed by a row that
+# re-establishes the slot, so a restore replay finds a live (paused) slot with
+# the tag and last_reset intact rather than a deleted key.
+ctail="$(events_for cancelwin | tail -3 | tr '\n' ',')"
+[ "$ctail" = "reset,resume,cancel," ] \
+    || fail "cancelwin: expected the last three events to be reset,resume,cancel (D7), got: $ctail"
+pass "cancel across a boundary discards the interval instead of billing it"
+
+# Control: the same cancel with NO boundary crossed is unchanged (main
+# behavior) — still zero billable seconds, and no second reset row.
+run "$PLUGIN_DIR/scripts/timer.sh toggle $wcan"
+sleep 2
+run "SIDETABS_TIMER_TODAY=2026-08-20 '$PLUGIN_DIR/scripts/timer.sh' cancel $wcan"
+[ "$(billable_secs_for cancelwin)" = "0" ] \
+    || fail "cancelwin: non-boundary cancel billed seconds: $(billable_secs_for cancelwin)"
+[ "$(resets_for cancelwin)" = "1" ] \
+    || fail "cancelwin: non-boundary cancel logged another reset, got $(resets_for cancelwin)"
+[ "$(winopt "$wcan" @sidetabs_timer_state)" = "pause" ] \
+    || fail "cancelwin: non-boundary cancel left state '$(winopt "$wcan" @sidetabs_timer_state)'"
+pass "cancel with no boundary crossed is unchanged"
 
 echo "ALL TIMER CYCLE SMOKE TESTS PASSED"
