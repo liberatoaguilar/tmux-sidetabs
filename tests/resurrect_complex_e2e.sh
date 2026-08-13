@@ -7,7 +7,7 @@
 #   * preserves every content pane (by working directory).
 set -euo pipefail
 SOCK="sidetabs_cx_$$"
-PLUGIN=/Users/liberatoaguilar/Desktop/Aguilabs/tmux-sidetabs
+PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
 REZ="$HOME/.tmux/plugins/tmux-resurrect"
 RDIR="$(mktemp -d)"
 D1="$(mktemp -d)"; D2="$(mktemp -d)"; D3="$(mktemp -d)"   # distinct content cwds
@@ -35,7 +35,11 @@ marked_in(){ tmux -L "$SOCK" list-panes -t "$1" -F '#{@is_sidetab}' | grep -c '^
 slivers_any(){ tmux -L "$SOCK" list-panes -a -F '#{pane_width}' | awk '$1<=3' | wc -l | tr -d ' '; }
 
 # --- Build: window 1 = sidebar + main + two stacked (4 panes); window 2 = sidebar + 1 split ---
-tmux -L "$SOCK" new-session -d -s cx -x 200 -y 50
+# -f /dev/null: without it a new server on this socket still auto-loads the
+# user's ~/.tmux.conf (which run-shells this plugin AND others), polluting
+# hooks/keys and defeating test isolation — the same reason every other suite
+# in this repo boots this way.
+tmux -L "$SOCK" -f /dev/null new-session -d -s cx -x 200 -y 50
 setup_server; sleep 0.4
 # window 1
 c=$(content_pane @0 2>/dev/null || true); c=$(tmux -L "$SOCK" list-panes -t cx:0 -F '#{pane_id} #{@is_sidetab}' | awk '$2!="1"{print $1; exit}')
@@ -62,7 +66,7 @@ tmux -L "$SOCK" run-shell "$REZ/scripts/save.sh"; sleep 0.6
 
 # --- Simulate reboot: kill + fresh server + restore ---
 tmux -L "$SOCK" kill-server; sleep 0.3
-tmux -L "$SOCK" new-session -d -s cx -x 200 -y 50
+tmux -L "$SOCK" -f /dev/null new-session -d -s cx -x 200 -y 50
 setup_server; sleep 0.4
 tmux -L "$SOCK" run-shell "$REZ/scripts/restore.sh"; sleep 1.8
 

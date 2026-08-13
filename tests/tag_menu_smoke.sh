@@ -38,9 +38,13 @@ grep -q '(current)' "$PICKOUT" || fail "clear entry not marked current on an unt
 pass "tag_picker --print with no tags file: only the clear entry"
 
 # 3. Write a tags file (note.sh/timer_restore_smoke.sh convention: #-comment
-#    header, tag<TAB>label<TAB>reset_day). tag_picker --print now lists both
-#    rows plus the clear entry, unique shortcut keys, no row marked current.
-printf '# tag\tlabel\treset_day\ncust-A\tClient A\t15\ncust-B\tClient B\t1\n' > "$TMPTAGS"
+#    header, tag<TAB>label<TAB>reset_day). Also throws in a blank line, to
+#    confirm tags_list's `!/^#/` skip doesn't choke on one (a blank line has
+#    NF==0, already excluded by the `$1 != ""` guard). tag_picker --print now
+#    lists both real rows plus the clear entry, unique shortcut keys, no row
+#    marked current — a stray 4th item would mean the comment or blank line
+#    leaked through.
+printf '# tag\tlabel\treset_day\n\ncust-A\tClient A\t15\ncust-B\tClient B\t1\n' > "$TMPTAGS"
 tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_picker.sh --print $w0 > $PICKOUT"
 n="$(grep -c . "$PICKOUT" || true)"
 [ "$n" = "3" ] || fail "tag_picker --print: expected 3 items (2 tags + clear), got $n"
@@ -125,5 +129,24 @@ tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_set.sh $w0 cust-A"
 tmux -L "$SOCKET" run-shell "PATH='$TMUXBIN_DIR:/usr/bin:/bin' '$PLUGIN_DIR/scripts/register_repo.sh' $w0" \
   || fail "register_repo.sh without aguilabs on PATH exited nonzero"
 pass "register_repo.sh degrades gracefully without the aguilabs CLI on PATH"
+
+# 9. timer.sh's menu: the "register repo…" item is present only when the tags
+#    file exists AND the window is tagged (SIDETABS_TIMER_MENU_PRINT seam —
+#    an overlay menu never lands in capture-pane output). Tagged + tags file
+#    present -> item shows up, labeled from the tags file. No tags file at all
+#    -> absent even though the window is still tagged (keeps the plugin
+#    generic for non-aguilabs users, C7).
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_set.sh $w0 cust-A"
+tmux -L "$SOCKET" run-shell "SIDETABS_TIMER_MENU_PRINT=1 '$PLUGIN_DIR/scripts/timer.sh' menu $w0 > $PICKOUT"
+grep -q 'register repo for Client A' "$PICKOUT" \
+  || fail "register-repo item missing with tags file + tag present: $(cat "$PICKOUT")"
+pass "register-repo item present when tagged and tags file exists"
+
+mv "$TMPTAGS" "${TMPTAGS}.bak"
+tmux -L "$SOCKET" run-shell "SIDETABS_TIMER_MENU_PRINT=1 '$PLUGIN_DIR/scripts/timer.sh' menu $w0 > $PICKOUT"
+mv "${TMPTAGS}.bak" "$TMPTAGS"
+grep -q 'register repo' "$PICKOUT" \
+  && fail "register-repo item present with no tags file: $(cat "$PICKOUT")"
+pass "register-repo item absent when the tags file does not exist"
 
 echo "ALL TAG MENU SMOKE TESTS PASSED"

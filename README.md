@@ -387,4 +387,6 @@ cannot leak in:
 ./tests/notes_smoke.sh           # per-window notes + durable store
 ./tests/agent_status_smoke.sh    # agent status: aggregation, visit-clear, render
 ./tests/tag_menu_smoke.sh        # assign-client submenu + register-repo passthrough
+./tests/timer_cycle_smoke.sh     # per-tag billing-cycle auto reset
+./tests/resurrect_complex_e2e.sh # multi-pane layouts across a real resurrect save/restore
 ```

@@ -36,6 +36,14 @@
 #   arg2 = state to seed, hold|pause (restore-state only).
 #   arg3 = tag to seed, `-` for untagged (restore-state only).
 #   arg4 = @sidetabs_timer_last_reset to seed, ISO date (restore-state only).
+#
+# Test hook: SIDETABS_TIMER_MENU_PRINT=1 makes the `menu` subcommand print its
+# constructed ITEMS as "key<TAB>label" lines instead of opening a display-menu,
+# and exit before touching tmux's overlay. This is `menu`'s only testable seam
+# — an overlay menu never lands in capture-pane output (flag_picker.sh:7-9) —
+# same inline-env-var convention as SIDETABS_TIMER_TODAY (helpers.sh) and
+# search.sh's SIDETABS_SEARCH_LIST/PICK: run-shell does not inherit the test
+# shell's exports, so tests set it inline on the run-shell command string.
 set -euo pipefail
 
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -365,6 +373,14 @@ menu)
         [ -n "$mlabel" ] || mlabel="$mtag"
         mlabel="$(printf '%s' "$mlabel" | tr '\011' ' ' | tr -d '\000-\037' | tr -s ' ')"
         ITEMS+=("register repo for ${mlabel}…" g "run-shell -b '$CURRENT_DIR/register_repo.sh $WID'")
+    fi
+    if [ "${SIDETABS_TIMER_MENU_PRINT:-}" = "1" ]; then
+        i=0
+        while [ "$i" -lt "${#ITEMS[@]}" ]; do
+            printf '%s\t%s\n' "${ITEMS[$((i + 1))]}" "${ITEMS[$i]}"
+            i=$((i + 3))
+        done
+        exit 0
     fi
     if [ -n "$ARG" ]; then
         tmux display-menu -c "$ARG" -T ' timer ' "${ITEMS[@]}"
