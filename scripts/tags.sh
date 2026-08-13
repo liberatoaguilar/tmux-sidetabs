@@ -30,6 +30,18 @@ tag_label() {
     return 0
 }
 
+# tags_list -> "tag<TAB>label" for every valid row, in file order, or nothing
+# when the file is absent/unreadable/empty. C7's tag_picker.sh source of truth
+# for the assign-client submenu; same no-crash-on-garbage contract as the
+# lookups above (rows missing a label column are skipped, not errored).
+tags_list() {
+    local f
+    f="$(tags_file)"
+    [ -r "$f" ] || return 0
+    awk -F'\t' '!/^#/ && NF >= 2 && $1 != "" { print $1 "\t" $2 }' "$f" 2>/dev/null
+    return 0
+}
+
 # tag_reset_day <tag> -> reset_day (1-31) from the first matching row, or "0"
 # ("never auto-reset") when the tag is missing/untagged, the file is
 # absent/unreadable, or the stored value isn't a plain 0-31 integer.

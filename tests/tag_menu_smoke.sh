@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# C7 smoke test: the "assign client…" submenu (tag_picker.sh / tag_set.sh) and
+# timer.sh's menu construction (shared ITEMS array; conditional register-repo
+# item). Uses the --print seam throughout — an overlay menu never lands in
+# capture-pane output (flag_picker.sh:7-9).
+set -euo pipefail
+
+SOCKET="sidetab_tagmenu_$$"
+PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+TMPLOG="${TMPDIR:-/tmp}/sidetabs_tagmenu_$$.tsv"
+TMPTAGS="${TMPDIR:-/tmp}/sidetabs_tagmenu_tags_$$.tsv"
+PICKOUT="${TMPDIR:-/tmp}/sidetabs_tagmenu_pick_$$.out"
+
+cleanup() { tmux -L "$SOCKET" kill-server 2>/dev/null || true; rm -f "$TMPLOG" "$TMPTAGS" "$PICKOUT"; }
+trap cleanup EXIT
+
+fail() { echo "FAIL: $*"; exit 1; }
+pass() { echo "PASS: $*"; }
+winopt() { tmux -L "$SOCKET" show-option -w -t "$1" -qv "$2"; }
+
+# 1. Boot: 1 window, hermetic log + tags-file paths, no tags file yet.
+tmux -L "$SOCKET" -f /dev/null new-session -d -s main -x 200 -y 50
+tmux -L "$SOCKET" set-option -g @sidetabs-summary off
+tmux -L "$SOCKET" set-option -g @sidetabs-timer-log "$TMPLOG"
+tmux -L "$SOCKET" set-option -g @sidetabs-timer-tags-file "$TMPTAGS"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/sidetabs.tmux"
+sleep 0.4
+w0="$(tmux -L "$SOCKET" list-windows -t main -F '#{window_id}' | sed -n 1p)"
+[ -n "$w0" ] || fail "setup: expected a window"
+
+# 2. tag_picker --print with no tags file: only the clear entry, marked
+#    current (window is untagged), on key 0.
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_picker.sh --print $w0 > $PICKOUT"
+n="$(grep -c . "$PICKOUT" || true)"
+[ "$n" = "1" ] || fail "tag_picker --print with no tags file: expected 1 item, got $n"
+grep -q '^0	none	' "$PICKOUT" || fail "clear entry not on key 0: $(cat "$PICKOUT")"
+grep -q '(current)' "$PICKOUT" || fail "clear entry not marked current on an untagged window"
+pass "tag_picker --print with no tags file: only the clear entry"
+
+# 3. Write a tags file (note.sh/timer_restore_smoke.sh convention: #-comment
+#    header, tag<TAB>label<TAB>reset_day). tag_picker --print now lists both
+#    rows plus the clear entry, unique shortcut keys, no row marked current.
+printf '# tag\tlabel\treset_day\ncust-A\tClient A\t15\ncust-B\tClient B\t1\n' > "$TMPTAGS"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_picker.sh --print $w0 > $PICKOUT"
+n="$(grep -c . "$PICKOUT" || true)"
+[ "$n" = "3" ] || fail "tag_picker --print: expected 3 items (2 tags + clear), got $n"
+grep -q $'\tcust-A\tClient A$' "$PICKOUT" || fail "cust-A row missing/mislabeled: $(cat "$PICKOUT")"
+grep -q $'\tcust-B\tClient B$' "$PICKOUT" || fail "cust-B row missing/mislabeled: $(cat "$PICKOUT")"
+if awk -F'\t' '$2 != "none"' "$PICKOUT" | grep -q '(current)'; then
+  fail "a tag row is marked current before any tag is assigned"
+fi
+nkeys="$(cut -f1 "$PICKOUT" | sort -u | grep -c . || true)"
+[ "$nkeys" = "3" ] || fail "tag_picker shortcut keys not unique: $nkeys distinct of 3"
+pass "tag_picker --print lists tags-file rows + clear entry, keys unique"
+
+# 4. tag_set writes @sidetabs_timer_tag; tag_picker then marks that row (only
+#    that row) as current.
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_set.sh $w0 cust-A"
+got="$(winopt "$w0" @sidetabs_timer_tag)"
+[ "$got" = "cust-A" ] || fail "tag_set cust-A: expected cust-A, got '$got'"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_picker.sh --print $w0 > $PICKOUT"
+awk -F'\t' '$2 == "cust-A"' "$PICKOUT" | grep -q '(current)' \
+  || fail "tag_picker did not mark cust-A as current"
+if awk -F'\t' '$2 != "cust-A"' "$PICKOUT" | grep -q '(current)'; then
+  fail "tag_picker marked a non-current item as current"
+fi
+pass "tag_set assigns a tag; tag_picker marks it current"
+
+# 5. tag_set clears the tag on "none".
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_set.sh $w0 none"
+got="$(winopt "$w0" @sidetabs_timer_tag)"
+[ -z "$got" ] || fail "tag_set none: expected unset, got '$got'"
+pass "tag_set none clears the tag"
+
+# 5b. Reassigning a window's tag clears the stale @sidetabs_timer_last_reset
+#     marker: the OLD tag's last_reset must never be compared against the NEW
+#     tag's cycle boundary (it could wrongly zero a total on relabel, or
+#     wrongly skip a reset the new tag genuinely owes). Re-picking the SAME
+#     tag (the menu marks it "(current)") is a deliberate no-op — an
+#     unconditional unset would re-seed to "now" and swallow a due reset.
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_set.sh $w0 cust-A"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/timer.sh toggle $w0"   # first sighting: seeds last_reset
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/timer.sh reset $w0"
+lr1="$(winopt "$w0" @sidetabs_timer_last_reset)"
+[ -n "$lr1" ] || fail "last_reset not seeded on first tagged interaction"
+
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_set.sh $w0 cust-A"   # same tag: must NOT unset
+lr2="$(winopt "$w0" @sidetabs_timer_last_reset)"
+[ "$lr2" = "$lr1" ] || fail "re-picking the same tag changed last_reset ($lr1 -> $lr2)"
+
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_set.sh $w0 cust-B"   # different tag: must unset
+lr3="$(winopt "$w0" @sidetabs_timer_last_reset)"
+[ -z "$lr3" ] || fail "reassigning to a different tag left a stale last_reset: '$lr3'"
+pass "tag reassignment clears last_reset; re-picking the same tag does not"
+
+# 6. log_event picks up the live tag: after re-tagging and starting the
+#    timer, the logged row's tag column (10th field) carries it.
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_set.sh $w0 cust-B"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/timer.sh toggle $w0"
+tag="$(grep -v '^#' "$TMPLOG" | tail -1 | cut -f10)"
+[ "$tag" = "cust-B" ] || fail "logged tag: expected cust-B, got '$tag'"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/timer.sh reset $w0"
+pass "log_event carries the live tag into the event log"
+
+# 7. register_repo.sh guards, run IN-SERVER via run-shell (tmux propagates the
+#    shell command's own exit status as run-shell's exit status — verified
+#    empirically: a foreground run-shell is not fire-and-forget). Both guard
+#    branches below must exit 0 — a bad window/PATH must never crash the
+#    plugin — and NEITHER may reach the real `aguilabs` CLI: the untagged
+#    case returns before the command -v check is even reached, and the second
+#    case forces PATH to exclude it, so this test can never write to a real
+#    customer's registry no matter what is installed on this machine.
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_set.sh $w0 none"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/register_repo.sh $w0" \
+  || fail "register_repo.sh on an untagged window exited nonzero"
+pass "register_repo.sh on an untagged window is a no-op (exit 0)"
+
+# 8. Tagged, but `aguilabs` deliberately excluded from PATH: hits the
+#    command -v guard and exits 0 without ever shelling out. register_repo.sh
+#    itself still calls `tmux`, so the trimmed PATH must keep tmux's own bin
+#    dir reachable (it may not be /usr/bin — e.g. Homebrew) while dropping
+#    wherever `aguilabs` actually lives, so the guard is exercised for real.
+TMUXBIN_DIR="$(dirname "$(command -v tmux)")"
+tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/scripts/tag_set.sh $w0 cust-A"
+tmux -L "$SOCKET" run-shell "PATH='$TMUXBIN_DIR:/usr/bin:/bin' '$PLUGIN_DIR/scripts/register_repo.sh' $w0" \
+  || fail "register_repo.sh without aguilabs on PATH exited nonzero"
+pass "register_repo.sh degrades gracefully without the aguilabs CLI on PATH"
+
+echo "ALL TAG MENU SMOKE TESTS PASSED"

@@ -23,6 +23,12 @@
 # whose tag carries a reset day (tags file) and whose @sidetabs_timer_last_reset
 # predates the current cycle start is zeroed in-process by cycle_check below.
 #
+# Popup config (C7): the menu subcommand always offers "assign client…"
+# (opens tag_picker.sh, a submenu over the tags file) and, only when the tags
+# file exists and the window already carries a tag, "register repo for
+# <label>…" (backgrounds register_repo.sh, a passthrough to the aguilabs CLI).
+# Both are absent for plugin users who never set @sidetabs-timer-tags-file.
+#
 # Bound (sidebar-focused): @sidetabs-timer-key toggle, @sidetabs-timer-menu-key menu.
 # Usage: timer.sh <toggle|cancel|reset|menu|adjust|adjust-prompt|auto-hold|auto-resume|cycle-check|restore-state> [window_id] [arg] [arg2] [arg3] [arg4]
 #   arg  = adjust value (adjust), client_name (menu / adjust-prompt), or
@@ -341,16 +347,29 @@ restore-state)
     log_event restore - 0 "$ARG"
     ;;
 menu)
+    # One ITEMS array feeds both display-menu branches below instead of two
+    # literal lists drifting apart (the with-client and without-client forms
+    # only ever differed in adjust-prompt's trailing $ARG). C7 adds two more
+    # entries here: "assign client…" always, and "register repo for <label>…"
+    # only when the tags file exists AND the window is already tagged — the
+    # latter keeps the plugin generic for non-aguilabs users.
+    ITEMS=(
+        "adjust total…"                a "run-shell '$CURRENT_DIR/timer.sh adjust-prompt $WID${ARG:+ $ARG}'"
+        "cancel interval (keep total)" c "run-shell '$CURRENT_DIR/timer.sh cancel $WID'"
+        "reset (zero the timer)"       r "run-shell '$CURRENT_DIR/timer.sh reset $WID'"
+        "assign client…"               t "run-shell -b '$CURRENT_DIR/tag_picker.sh $WID $ARG'"
+    )
+    mtag="$(get_window_option "$WID" "$TIMER_TAG_OPTION" "")"
+    if [ -n "$mtag" ] && [ "$mtag" != "-" ] && [ -f "$(tags_file)" ]; then
+        mlabel="$(tag_label "$mtag")"
+        [ -n "$mlabel" ] || mlabel="$mtag"
+        mlabel="$(printf '%s' "$mlabel" | tr '\011' ' ' | tr -d '\000-\037' | tr -s ' ')"
+        ITEMS+=("register repo for ${mlabel}…" g "run-shell -b '$CURRENT_DIR/register_repo.sh $WID'")
+    fi
     if [ -n "$ARG" ]; then
-        tmux display-menu -c "$ARG" -T ' timer ' \
-            "adjust total…"                a "run-shell '$CURRENT_DIR/timer.sh adjust-prompt $WID $ARG'" \
-            "cancel interval (keep total)" c "run-shell '$CURRENT_DIR/timer.sh cancel $WID'" \
-            "reset (zero the timer)"       r "run-shell '$CURRENT_DIR/timer.sh reset $WID'"
+        tmux display-menu -c "$ARG" -T ' timer ' "${ITEMS[@]}"
     else
-        tmux display-menu -T ' timer ' \
-            "adjust total…"                a "run-shell '$CURRENT_DIR/timer.sh adjust-prompt $WID'" \
-            "cancel interval (keep total)" c "run-shell '$CURRENT_DIR/timer.sh cancel $WID'" \
-            "reset (zero the timer)"       r "run-shell '$CURRENT_DIR/timer.sh reset $WID'"
+        tmux display-menu -T ' timer ' "${ITEMS[@]}"
     fi
     ;;
 esac

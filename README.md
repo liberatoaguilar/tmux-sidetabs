@@ -69,7 +69,7 @@ run-shell '/path/to/tmux-sidetabs/sidetabs.tmux'
 | `C-c` (in sidebar) | Cycle the current window's flag color one step forward (yellow → green → blue → purple → orange → teal → indigo → slate → none) |
 | `M-c` (in sidebar) | Open the flag color **picker**: a menu of live color swatches — press `1`-`8` to jump straight to a color, `0` to clear |
 | `C-t` (in sidebar) | Start / pause / resume the current window's stopwatch; counting pauses when the window loses focus (hourglass glyph ⏳ = auto-held, counting resumes on focus) |
-| `M-t` (in sidebar) | Open the timer menu: adjust total time, cancel current interval, or reset the timer |
+| `M-t` (in sidebar) | Open the timer menu: adjust total time, cancel current interval, reset the timer, assign a client, or (once tagged, with a tags file configured) register the current repo |
 | `M-n` (in sidebar) | Edit the current window's **note** in a popup (`$EDITOR`); multi-line text is kept, save an empty buffer to clear it. Windows with a note show a sticky-note glyph  |
 
 `C-j` / `C-k` outside the sidebar keep their normal `select-pane -D/-U` behavior
@@ -108,7 +108,7 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-flag-key` | `C-c` | Key to cycle the current window's flag color (set to `none` to disable — applies to every key option) |
 | `@sidetabs-flag-picker-key` | `M-c` | Key to open the flag color picker menu (`none` to disable) |
 | `@sidetabs-timer-key` | `C-t` | Key to start / pause the current window's timer |
-| `@sidetabs-timer-menu-key` | `M-t` | Key to open the timer menu (adjust total, cancel current interval, or reset) |
+| `@sidetabs-timer-menu-key` | `M-t` | Key to open the timer menu (adjust total, cancel current interval, reset, assign client, register repo) |
 | `@sidetabs-timer-autofocus` | `on` | `off` to disable auto pause/resume when window loses/gains focus |
 | `@sidetabs-timer-restore` | `on` | `off` to disable re-seeding timers from the event log — both after a tmux-resurrect restore and via the boot-time `client-attached` fallback |
 | `@sidetabs-note-key` | `M-n` | Key to open the note editor popup for the current window (`none` to disable) |
@@ -117,7 +117,7 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-agent-status` | `on` | `off` stops any new agent signal being raised **and** hides any that is already showing (see [Agent status](#agent-status)) — the agent-side hooks can stay installed, they just stop costing anything. Flipping it off mid-turn is safe: a row that was lit at the time goes quiet immediately, and visiting the tab still clears the stored state |
 | `@sidetabs-agent-done-fg` | `#a3be8c` | Color of the ✓ glyph on a finished agent's row (nord14) |
 | `@sidetabs-timer-log` | `~/.local/share/tmux-sidetabs/timelog.tsv` | Path to the timer event log (TSV v3: timestamp, event type, interval start, interval duration, total, session, window, window_id, cwd, tag; events are `start` / `resume` / `pause` / `auto-pause` / `auto-resume` / `adjust` / `cancel` / `reset` / `restore`. `tag` is the window's `@sidetabs_timer_tag` at write time, or `-` when untagged; readers also accept older 9-col (v2, no tag) and legacy 6-col rows) |
-| `@sidetabs-timer-tags-file` | `~/.local/share/tmux-sidetabs/tags.tsv` | Path to the tags file (TSV: tag, label, reset_day; `#` comments). Written by `aguilabs usage configure --sync`; read only by this plugin for menu labels and per-tag cycle-reset days |
+| `@sidetabs-timer-tags-file` | `~/.local/share/tmux-sidetabs/tags.tsv` | Path to the tags file (TSV: tag, label, reset_day; `#` comments). Written by `aguilabs usage configure --sync`; read only by this plugin for menu labels, per-tag cycle-reset days, and the "assign client…" / "register repo…" menu items below |
 
 Example:
 
@@ -312,6 +312,20 @@ original `C-h` / `C-j` / `C-k` bindings.)
   tagged window is seen the current cycle start is only recorded
   (`@sidetabs_timer_last_reset`), so enabling this mid-cycle never zeroes a live
   total. Untagged windows, and tags with reset day `0`, never auto-reset.
+- **Assign client / register repo** (`M-t` → the two bottom entries): "assign
+  client…" opens a submenu built from `@sidetabs-timer-tags-file` — one entry
+  per row (label, marked "(current)" for the window's assigned tag), plus an
+  "untagged (clear)" entry — and picking one sets or clears
+  `@sidetabs_timer_tag`. tmux has no native nested menu, so this submenu is a
+  second `display-menu` opened by the first menu's item. "register repo for
+  `<label>`…" only appears once the window is tagged **and** the tags file
+  exists (it stays hidden for non-aguilabs users); picking it shells out in
+  the background to `aguilabs usage configure --customer <customer> --add-repo
+  <cwd>`, where `<customer>` is the tag up to its first `:` (a
+  `customer:project` tag registers under the customer) and `<cwd>` is the
+  active *content* pane's directory (never the sidetab strip's). Missing
+  `aguilabs` on `PATH`, or no resolvable content-pane cwd, reports via
+  `display-message` and is otherwise a no-op.
 - Killing a window with a running timer silently drops the unlogged in-flight interval —
   if timing a long task, pause first to ensure it's logged.
 - Timers use wall-clock time: laptop sleep counts toward elapsed time. The timer
@@ -372,4 +386,5 @@ cannot leak in:
 ./tests/timer_restore_smoke.sh   # re-seeding timers from the event log
 ./tests/notes_smoke.sh           # per-window notes + durable store
 ./tests/agent_status_smoke.sh    # agent status: aggregation, visit-clear, render
+./tests/tag_menu_smoke.sh        # assign-client submenu + register-repo passthrough
 ```
