@@ -24,10 +24,12 @@
 # predates the current cycle start is zeroed in-process by cycle_check below.
 #
 # Bound (sidebar-focused): @sidetabs-timer-key toggle, @sidetabs-timer-menu-key menu.
-# Usage: timer.sh <toggle|cancel|reset|menu|adjust|adjust-prompt|auto-hold|auto-resume|cycle-check|restore-state> [window_id] [arg] [arg2]
+# Usage: timer.sh <toggle|cancel|reset|menu|adjust|adjust-prompt|auto-hold|auto-resume|cycle-check|restore-state> [window_id] [arg] [arg2] [arg3] [arg4]
 #   arg  = adjust value (adjust), client_name (menu / adjust-prompt), or
 #          accumulated seconds (restore-state).
 #   arg2 = state to seed, hold|pause (restore-state only).
+#   arg3 = tag to seed, `-` for untagged (restore-state only).
+#   arg4 = @sidetabs_timer_last_reset to seed, ISO date (restore-state only).
 set -euo pipefail
 
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -39,6 +41,8 @@ CMD="${1:-toggle}"
 WID="${2:-$(tmux display-message -p '#{window_id}')}"
 ARG="${3:-}"
 ARG2="${4:-}"
+ARG3="${5:-}"
+ARG4="${6:-}"
 [ -z "$WID" ] && exit 0
 TAB="$(printf '\t')"
 
@@ -314,6 +318,26 @@ restore-state)
     case "$ARG2" in hold|pause) ;; *) exit 0 ;; esac
     set_window_option "$WID" "$TIMER_ACC_OPTION" "$ARG"
     set_window_option "$WID" "$TIMER_STATE_OPTION" "$ARG2"
+    # Tag (C6): `-`/empty means the log only ever knew this window as untagged.
+    # Sanitized the way log_event sanitizes its read — the log is a plain text
+    # file, and a hand-edited row must not smuggle control chars into a TSV
+    # column or a menu. A live tag wins here too (the window may have been
+    # re-tagged before the restore landed), and the tag is written BEFORE the
+    # restore row so that row carries it.
+    rtag="$(printf '%s' "$ARG3" | tr '\011' ' ' | tr -d '\000-\037' | tr -s ' ')"
+    if [ -n "$rtag" ] && [ "$rtag" != "-" ] \
+       && [ -z "$(get_window_option "$WID" "$TIMER_TAG_OPTION" "")" ]; then
+        set_window_option "$WID" "$TIMER_TAG_OPTION" "$rtag"
+        # last_reset is only meaningful next to a tag: seeded onto an untagged
+        # window it would make the first cycle_check after someone assigns a
+        # tag see a stale date and zero the total that C5's rollout seeding
+        # exists to preserve. Re-validated here — the derivation upstream is
+        # only as trustworthy as the log rows it read.
+        rre='^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+        if [[ "$ARG4" =~ $rre ]]; then
+            set_window_option "$WID" "$TIMER_LAST_RESET_OPTION" "$ARG4"
+        fi
+    fi
     log_event restore - 0 "$ARG"
     ;;
 menu)

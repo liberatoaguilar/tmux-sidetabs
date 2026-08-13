@@ -9,6 +9,12 @@ RENDER_PID_OPTION="@sidetabs_render_pid"
 # resurrect post-restore hook clears it and rebuilds clean sidebars.
 RESTORING_OPTION="@sidetabs_restoring"
 
+# Global flag, one per server generation (it dies with the server, exactly like
+# the timer state it guards): "1" once a timer restore has run here. The
+# client-attached fallback in sidetabs.tmux stands down while it is set, so the
+# fallback and a tmux-resurrect restore never both seed the same generation.
+TIMER_RESTORED_OPTION="@sidetabs_timer_restored"
+
 # Per-session user options
 COLLAPSED_OPTION="@sidetabs_collapsed"
 WIDTH_OPTION="@sidetabs_width"                   # current expanded width (synced)

@@ -7,7 +7,9 @@ source "$CURRENT_DIR/variables.sh"
 source "$CURRENT_DIR/helpers.sh"
 
 # Unhook everything FIRST — otherwise killing a sidetab pane fires
-# window-layout-changed and the resurrection hook recreates it.
+# window-layout-changed and the resurrection hook recreates it. Naming an array
+# hook without an index clears EVERY index (verified on tmux 3.6), so the
+# client-attached entry here covers [0], [1] and the [2] boot-restore fallback.
 for hook in after-new-window after-new-session window-renamed \
             session-window-changed window-linked window-unlinked \
             pane-focus-in alert-activity window-layout-changed window-resized \

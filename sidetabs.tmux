@@ -37,6 +37,15 @@ register_hooks() {
     tmux set-hook -g 'client-session-changed[1]' "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
     tmux set-hook -g 'client-attached[1]'        "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
     tmux set-hook -g 'client-detached[1]'        "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
+    # Fallback timer restore. tmux-continuum skips auto-restore ENTIRELY — and
+    # with it tmux-resurrect's post-restore hook, our only other delivery path —
+    # whenever another tmux server was running at startup or the server is past
+    # @continuum-restore-max-delay, leaving every timer silently zeroed. This is
+    # NOT a bare restore-on-attach hook: `boot` mode self-gates on server age
+    # and on the once-per-generation @sidetabs_timer_restored flag (see the
+    # header of timer_restore.sh), because seeding a window created LATER from
+    # same-name log rows would be a silent billing overcount.
+    tmux set-hook -g 'client-attached[2]'        "run-shell -b '$SCRIPTS_DIR/timer_restore.sh boot'"
     tmux set-hook -g window-linked \
         "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
     tmux set-hook -g window-unlinked \

@@ -110,7 +110,7 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-timer-key` | `C-t` | Key to start / pause the current window's timer |
 | `@sidetabs-timer-menu-key` | `M-t` | Key to open the timer menu (adjust total, cancel current interval, or reset) |
 | `@sidetabs-timer-autofocus` | `on` | `off` to disable auto pause/resume when window loses/gains focus |
-| `@sidetabs-timer-restore` | `on` | `off` to disable re-seeding timers from the event log after a tmux-resurrect restore |
+| `@sidetabs-timer-restore` | `on` | `off` to disable re-seeding timers from the event log — both after a tmux-resurrect restore and via the boot-time `client-attached` fallback |
 | `@sidetabs-note-key` | `M-n` | Key to open the note editor popup for the current window (`none` to disable) |
 | `@sidetabs-note-icon` | (sticky note) | Glyph shown on rows that have a note. Any string works — set it to something ASCII if your font lacks Nerd Font glyphs. A multi-character icon is measured and takes its columns from the window name, so a long one leaves less room for the name |
 | `@sidetabs-note-store` | `~/.local/share/tmux-sidetabs/notes.tsv` | Path to the durable note store (TSV: session, window name, note — one row per noted window; newlines in the note are stored escaped as `\n`, so a row is always one line) |
@@ -279,14 +279,28 @@ original `C-h` / `C-j` / `C-k` bindings.)
   for seconds; the total is clamped at 0.
 - **Timers survive restarts** (with tmux-resurrect/continuum): live state is
   session-only, but the post-restore hook replays the timer log — the durable
-  record — and re-seeds each window's total, matching windows by session +
-  window *name* (ids change across restarts; renamed windows don't match, and
-  with duplicate names only the lowest-indexed window is seeded). A timer that
-  was running comes back auto-held and resumes when its window regains focus; a
-  manual pause comes back paused; a reset timer stays gone. Each re-seed logs a
-  `restore` event. Seconds between the last logged event and the server dying
-  are not recoverable. Disable with `@sidetabs-timer-restore off`. Flag colors
-  have no durable record and still reset with the server.
+  record — and re-seeds each window's total, tag and cycle marker, matching
+  windows by session + window *name* (ids change across restarts; renamed
+  windows don't match, and with duplicate names only the lowest-indexed window
+  is seeded). A timer that was running comes back auto-held and resumes when its
+  window regains focus; a manual pause comes back paused; a reset timer stays
+  gone. The tag comes from the log's `tag` column (rows written before v3 come
+  back untagged); `@sidetabs_timer_last_reset` is not a logged column, so it is
+  derived — the date of that window's last `reset` row, else of its first row —
+  which is what makes a billing boundary crossed while the server was down still
+  reset on the next interaction. Each re-seed logs a `restore` event. Seconds
+  between the last logged event and the server dying are not recoverable.
+  Disable with `@sidetabs-timer-restore off`. Flag colors have no durable record
+  and still reset with the server.
+- **Restore has a second delivery path.** tmux-continuum skips auto-restore
+  entirely when another tmux server was running at startup, or when the server
+  is older than `@continuum-restore-max-delay` — resurrect's post-restore hook
+  then never fires and every timer silently stays at zero. A `client-attached`
+  hook covers that case, but only while the server is younger than two minutes
+  and only once per server generation (`@sidetabs_timer_restored`): re-seeding
+  on a later attach could hand a freshly created window the total of a long-gone
+  window with the same name. A restore that fails now says so with a
+  `display-message` instead of being swallowed.
 - **Per-tag billing-cycle reset**: a window carrying a tag (`@sidetabs_timer_tag`)
   whose row in the tags file names a reset day (1–31, clamped to the month's real
   length) zeroes itself on that day each month. The check is lazy — it happens on

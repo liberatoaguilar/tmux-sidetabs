@@ -2,16 +2,21 @@
 # Resurrect-integration smoke test. Reproduces the mess tmux-resurrect leaves —
 # unmarked, full-height, left-edge "dead" sidebar strips (the @is_sidetab marker
 # is a pane option resurrect does not save) — and asserts that:
-#   * the restoring flag suppresses sidebar creation during a restore, and
+#   * the restoring flag suppresses sidebar creation during a restore,
 #   * resurrect_post.sh converges every window to exactly one marked sidetab
-#     with no leftover dead strip.
+#     with no leftover dead strip, and
+#   * the post hook actually REACHES the timer restore. That call used to sit
+#     behind two cosmetic pane sweeps in a script running under `set -euo
+#     pipefail`, and its failures were swallowed by `|| true` — a restore that
+#     never ran looked exactly like one that found nothing to do.
 set -euo pipefail
 
 SOCKET="sidetab_rez_$$"
 PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPTS="$PLUGIN_DIR/scripts"
+TMPLOG="${TMPDIR:-/tmp}/sidetabs_rez_$$.tsv"
 
-cleanup() { tmux -L "$SOCKET" kill-server 2>/dev/null || true; }
+cleanup() { tmux -L "$SOCKET" kill-server 2>/dev/null || true; rm -f "$TMPLOG"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*"; exit 1; }
 pass() { echo "PASS: $*"; }
@@ -25,8 +30,19 @@ count_strips() {  # $1 = window_id -> unmarked full-height flush-left narrow pan
     | awk '$1==0 && $2==0 && $3==$4 && $5<=24 && $6!="1"' | wc -l | tr -d ' '
 }
 
+# 0. Durable timer history for a window this test will restore into, so the
+#    post hook has something to re-seed (matched by session + window NAME).
+printf '#ts\tevent\tinterval_start\tinterval_s\ttotal_s\tsession\twindow\twindow_id\tcwd\ttag\n' > "$TMPLOG"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  2026-07-02T09:00:00-0600 start - 0  0  main rezwin @70 /tmp cust-A \
+  >> "$TMPLOG"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  2026-07-02T09:01:17-0600 pause t1 77 77 main rezwin @70 /tmp cust-A \
+  >> "$TMPLOG"
+
 # 1. Start server + load plugin -> one marked sidetab in the window.
 tmux -L "$SOCKET" new-session -d -s main -x 200 -y 50
+tmux -L "$SOCKET" set-option -g @sidetabs-timer-log "$TMPLOG"
 tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/sidetabs.tmux"
 sleep 0.4
 w0="$(tmux -L "$SOCKET" list-windows -t main -F '#{window_id}' | sed -n 1p)"
@@ -39,6 +55,7 @@ tmux -L "$SOCKET" new-window
 sleep 0.4
 w1="$(tmux -L "$SOCKET" list-windows -t main -F '#{window_id}' | sed -n 2p)"
 [ "$(count_marked "$w1")" = "0" ] || fail "restoring flag ignored: sidetab created during restore"
+tmux -L "$SOCKET" rename-window -t "$w1" rezwin   # matches the synthetic history
 pass "restoring flag suppresses creation"
 
 # 3. Stage resurrect's leftover: an unmarked full-height left strip in w1, and
@@ -79,5 +96,16 @@ for w in $(tmux -L "$SOCKET" list-windows -a -F '#{window_id}'); do
   [ "$act_sb" != "1" ] || fail "window $w still has the sidebar as its active pane"
 done
 pass "post-restore: focus moved off the sidebar in every window"
+
+# 8. The timer restore was reached: rezwin's total is back from the log, its
+#    tag with it, and a `restore` row marks the boundary. This is the assertion
+#    that would have caught a chain aborting in an earlier sweep.
+[ "$(tmux -L "$SOCKET" show-option -w -t "$w1" -qv @sidetabs_timer_acc)" = "77" ] \
+  || fail "rezwin timer not re-seeded by the post hook (acc='$(tmux -L "$SOCKET" show-option -w -t "$w1" -qv @sidetabs_timer_acc)')"
+[ "$(tmux -L "$SOCKET" show-option -w -t "$w1" -qv @sidetabs_timer_tag)" = "cust-A" ] \
+  || fail "rezwin tag not re-seeded by the post hook"
+awk -F'\t' '!/^#/ && $2=="restore" && $7=="rezwin" && $5=="77"' "$TMPLOG" | grep -q . \
+  || fail "no restore row logged for rezwin — the post hook never reached timer_restore.sh"
+pass "post-restore: timers re-seeded from the log and a restore row logged"
 
 echo "ALL RESURRECT SMOKE TESTS PASSED"

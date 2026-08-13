@@ -22,6 +22,29 @@ source "$CURRENT_DIR/variables.sh"
 source "$CURRENT_DIR/helpers.sh"
 RENDER_CMD="$CURRENT_DIR/render.sh"
 
+# Durable state FIRST, cosmetics after. Everything below this point is sidebar
+# housekeeping that touches panes the restore may have moved or killed under
+# us; if one of those sweeps ever aborts (this script runs under `set -euo
+# pipefail`), the timers must already be back. Neither restore needs a sidebar
+# to exist — they only read window names and write window options.
+#
+# Bring per-window timers back from the durable event log (window ids changed
+# across the restart, so this matches by session + window name). Failure used
+# to be swallowed whole: a restore that never ran looked exactly like a restore
+# that ran and found nothing, which is how a chain that had never fired went
+# unnoticed for a week. Say so instead.
+# `-d 0` holds the message until a keypress: this fires once in a blue moon,
+# right when a client is attaching, and a 750ms flash is exactly how it would
+# go unnoticed again.
+if ! "$CURRENT_DIR/timer_restore.sh"; then
+    tmux display-message -d 0 "sidetabs: timer restore failed (timers not re-seeded)" \
+        2>/dev/null || true
+fi
+
+# Same story for per-window notes: the live option died with the server, the
+# TSV note store is the durable record (also matched by session + window name).
+"$CURRENT_DIR/note.sh" restore || true
+
 # Adopt restored sidebars in place. A restored sidebar is: flush-left (pane_left
 # 0), spanning the full window height, narrower than half the window (a sidebar
 # is never a main pane), and not already marked. Width-relative-to-window keeps
@@ -32,7 +55,9 @@ tmux list-panes -a -F \
     if [ "$marker" != "1" ] && [ "$left" = "0" ] && [ "$top" = "0" ] \
        && [ "$height" = "$wheight" ] && [ $(( width * 2 )) -lt "$wwidth" ]; then
         tmux respawn-pane -k -t "$pane" "$RENDER_CMD" 2>/dev/null || true
-        set_pane_option "$pane" "$SIDETAB_MARKER" "1"
+        # Guarded like the respawn above: a pane that vanished mid-sweep would
+        # otherwise fail the whole pipeline subshell under `set -e`.
+        set_pane_option "$pane" "$SIDETAB_MARKER" "1" 2>/dev/null || true
     fi
 done
 
@@ -55,15 +80,9 @@ tmux list-windows -a -F '#{window_id}' 2>/dev/null | while read -r wid; do
     active_is_strip="$(tmux list-panes -t "$wid" -F '#{pane_active} #{@is_sidetab}' 2>/dev/null \
         | awk '$1 == 1 { print $2 }')"
     [ "$active_is_strip" = "1" ] || continue
+    # `|| true` on the pipeline: awk's early `exit` can SIGPIPE list-panes, and
+    # pipefail would make the assignment inherit 141 and `set -e` kill us here.
     target="$(tmux list-panes -t "$wid" -F '#{pane_id} #{@is_sidetab}' 2>/dev/null \
-        | awk '$2 != "1" { print $1; exit }')"
+        | awk '$2 != "1" { print $1; exit }' || true)"
     [ -n "$target" ] && tmux select-pane -t "$target" 2>/dev/null || true
 done
-
-# Bring per-window timers back from the durable event log (window ids changed
-# across the restart, so this matches by session + window name).
-"$CURRENT_DIR/timer_restore.sh" || true
-
-# Same story for per-window notes: the live option died with the server, the
-# TSV note store is the durable record (also matched by session + window name).
-"$CURRENT_DIR/note.sh" restore || true
