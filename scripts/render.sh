@@ -482,11 +482,43 @@ write_rowmap() {
 # gets a 'c' prefix so an empty expansion (tmux < 3.1 doesn't know the format)
 # can't shift fields; SNAME is last so read's remainder-merge absorbs any
 # separator that still sneaks through.
+READ_STATE_FMT="#{pane_id}${US}c#{window_active_clients}${US}#{window_active}${US}#{?${COLLAPSED_OPTION},#{${COLLAPSED_OPTION}},0}${US}#{pane_width}${US}#{${SUMMARY_CACHE_WIN}}${US}#{${SUMMARY_CACHE_AT}}${US}#{${SUMMARY_CACHE_GIT}}${US}#{${SUMMARY_CACHE_DIRS}}${US}#{session_name}"
+
+# Re-pin SESSION_ID / MY_WINDOW_ID / MY_TARGET from our own pane, in one
+# round-trip. The startup-pinned target goes stale when this window is MOVED
+# to another session (move-window): the session half no longer contains the
+# window, so every read against it fails — and build_lines would keep listing
+# the session left behind. Returns non-zero when the pane itself is gone
+# (window closing), so the caller can tell "moved" from "dying".
+repin_session() {
+    local ids
+    ids="$(tmux display-message -p -t "$MY_PANE_ID" \
+        "#{session_id}${US}#{window_id}" 2>/dev/null)"
+    [ -n "$ids" ] || return 1
+    IFS="$US" read -r SESSION_ID MY_WINDOW_ID <<< "$ids"
+    if [ -n "$MY_WINDOW_ID" ]; then
+        MY_TARGET="${SESSION_ID}:${MY_WINDOW_ID}.${MY_PANE_ID}"
+    else
+        MY_TARGET="$MY_PANE_ID"
+    fi
+}
+
 read_state() {
-    local state
-    state="$(tmux display-message -p -t "$MY_TARGET" \
-        "c#{window_active_clients}${US}#{window_active}${US}#{?${COLLAPSED_OPTION},#{${COLLAPSED_OPTION}},0}${US}#{pane_width}${US}#{${SUMMARY_CACHE_WIN}}${US}#{${SUMMARY_CACHE_AT}}${US}#{${SUMMARY_CACHE_GIT}}${US}#{${SUMMARY_CACHE_DIRS}}${US}#{session_name}" 2>/dev/null)"
-    IFS="$US" read -r VIS_CLIENTS WIN_ACTIVE COLLAPSED WIDTH CACHE_WIN CACHE_AT CACHE_GIT CACHE_DIRS SNAME <<< "$state"
+    local state attempt pane_check
+    for attempt in 1 2; do
+        state="$(tmux display-message -p -t "$MY_TARGET" "$READ_STATE_FMT" 2>/dev/null)"
+        IFS="$US" read -r pane_check VIS_CLIENTS WIN_ACTIVE COLLAPSED WIDTH CACHE_WIN CACHE_AT CACHE_GIT CACHE_DIRS SNAME <<< "$state"
+        # A pin invalidated by move-window does NOT fail — tmux best-matches
+        # "$old-session:@my-window.%me" to the old session's CURRENT window and
+        # ITS pane, so every field comes back populated with plausible values
+        # from the wrong window (and with the old session killed by losing its
+        # last window, they come back empty). The leading #{pane_id} is the
+        # detector for both: anything but our own pane id means the pin no
+        # longer points at us. Re-pin from our own pane and read once more; the
+        # steady state never takes the second lap.
+        [ "$pane_check" = "$MY_PANE_ID" ] && break
+        repin_session || break
+    done
     VIS_CLIENTS="${VIS_CLIENTS#c}"
     [ -z "$WIDTH" ] && WIDTH=4
 }
