@@ -30,7 +30,8 @@ separator style changes across restarts.
 - A per-session color, set from the sidebar, visible in the bottom strip.
 - Window and session colors survive a resurrect/continuum restart.
 - The strip becomes plugin-owned, tested, and versioned.
-- Solid-arrow separators everywhere (`>==>`), never the thin bar (`|==>`).
+- Classic powerline separators: the solid arrow (`>==>`) at every real color
+  boundary, a thin chevron on a same-background join.
 - The strip degrades gracefully as it runs out of width.
 
 ## Non-goals
@@ -60,7 +61,7 @@ Settled during design review. Recorded because several are non-obvious.
 | D11 | Strip defaults **off** | README ships TPM install instructions; a sidebar plugin must not eat your status bar |
 | D12 | Fix `uninstall.sh`'s bare-name hook unset | It currently nukes tmux-ticker's `-ga` handlers |
 | D13 | **Generate `status-left` in bash**, drop `#{S:}` | Kills `@strip_next` — the mechanism that goes stale across restarts |
-| D14 | Solid `` everywhere; dark ink at same-color joins | User preference; ink configurable |
+| D14 | Solid `` at a color boundary; thin `` at a same-background join | The classic powerline rule. A solid arrow between two same-colored pills either vanishes into the surface or, inked for contrast, reads as a heavy dark wedge between pills that are the same color. **Revised** — see [D14 was revised](#d14-was-revised) |
 | D15 | Debounced regenerate with a `force` escape | Matches `refresh.sh`; restore must not be dropped |
 | D16 | Shrink cascade, not clipping | The bar will run out of width soon |
 | D17 | **One generated string per session** | `status-left` is a per-session option; makes "current" static and the width budget accurate |
@@ -169,13 +170,25 @@ All emitted hex is lowercase (fact 7).
 
 ### Separator rule
 
-Every separator is the trailing cell of the pill to its left, always `` (U+E0B0):
+Every separator is the trailing cell of the pill to its left. **Which glyph it is
+depends on whether there is a color boundary there at all** — the classic
+powerline rule:
 
-- backgrounds differ: `fg` = left pill's bg, `bg` = right pill's bg (standard powerline)
-- backgrounds match: `fg` = `@sidetabs-strip-sep-fg` (default `#2e3440`), `bg` = the shared bg
-- last pill: `fg` = its bg, `bg` = `@sidetabs-strip-bg` (default `black`)
+- **backgrounds differ** — a real boundary: the solid `` (U+E0B0), `fg` = left
+  pill's bg, `bg` = right pill's bg. Standard powerline; the arrow reads as the
+  left pill's own edge cutting into the next one. **Not configurable**: there is
+  one right glyph for a boundary and this is it.
+- **backgrounds match** — nothing to cut: the thin `` chevron
+  (`@sidetabs-strip-sep-glyph`, default U+E0B1) drawn on the shared background.
+  Ink is `@sidetabs-strip-sep-fg`, whose default is the **sentinel `match`**,
+  meaning *the left pill's own foreground* — a white-on-grey session pill gets a
+  white-ish chevron, a black-on-cyan sysinfo pill a black-ish one. Any other
+  value is a literal color applied at every same-background join.
+- **last pill**: the "right pill" is the bar background
+  (`@sidetabs-strip-bg`, default `black`) and the same match/differ test applies.
 
-`` (U+E0B1) is never emitted.
+Both glyphs are **one display column**, so a join costs the width cascade exactly
+1 either way and no stage needs to know which one it will get.
 
 ### Edge pills
 
@@ -398,7 +411,8 @@ half-restoring, per the house rule that a failed operation is a no-op, never a c
 | `@sidetabs-strip-left-N` | *(unset)* | Left pill N (1..16); unset = plugin ignores that side |
 | `@sidetabs-strip-right-N` | *(unset)* | Right pill N (1..16) |
 | `@sidetabs-strip-left-N-bg` / `-fg` | theme | Per-pill colors |
-| `@sidetabs-strip-sep-fg` | `#2e3440` | Arrow ink where neighbors share a background |
+| `@sidetabs-strip-sep-fg` | `match` | Ink for the thin separator where neighbors share a background; the sentinel `match` = the pill's own fg |
+| `@sidetabs-strip-sep-glyph` | `` (U+E0B1) | Glyph for a same-background join; the boundary arrow is fixed |
 | `@sidetabs-strip-current-marker` | `▎` | Marker on a flagged current session |
 | `@sidetabs-strip-current-bg` | `blue` | Current-session pill background |
 | `@sidetabs-strip-idle-bg` / `-fg` | `brightblack` / `white` | Unflagged pill |
@@ -422,8 +436,10 @@ under `${TMPDIR:-/tmp}`, `fail()`/`pass()` helpers.
 `show-options -t <session> -v status-left`, needing no attached client:
 pill order matches session-id order; the current pill is highlighted in its *own*
 session's string and not in another's; precedence bell > flag > current > idle;
-agent `attention` colors the pill like a bell; `` appears and `` never does;
-same-color joins use `@sidetabs-strip-sep-fg`; every cascade stage at forced budgets
+agent `attention` colors the pill like a bell; a color boundary draws `` and a
+same-background join draws ``, asserted by count so "an arrow somewhere" cannot
+pass; the same-background ink defaults to the pill's own fg and an explicit
+`@sidetabs-strip-sep-fg` overrides it; every cascade stage at forced budgets
 via a `SIDETABS_STRIP_TEST_WIDTH` override; the `+N` floor; emitted hex is lowercase.
 
 **`tests/flag_restore_smoke.sh`** — store round-trip for both row shapes; clearing a
@@ -479,3 +495,24 @@ convenient — it is a bug fix, not part of this feature.
 - Collapsing grouped sessions.
 - Fixing `awk -v` in `note.sh` and `timer_restore.sh`.
 - A separate `@sidetabs-session-flag-colors` palette.
+
+## D14 was revised
+
+D14 originally read "solid `` everywhere; dark ink at same-color joins", and
+`@sidetabs-strip-sep-fg` defaulted to `#2e3440` to keep such an arrow visible.
+Rendered live, that is a row of heavy near-black filled triangles: one between
+every pair of same-colored sysinfo pills, and one between every pair of adjacent
+grey session pills. Nothing about those joins is a boundary, so drawing the
+boundary glyph at them states something false and does it loudly.
+
+The revision is the classic powerline rule, both halves of it. A **boundary**
+still gets the solid `` in the left pill's background — that is the `>` look the
+strip is built around and it is unchanged, and it is now explicitly not
+configurable. A **same-background** join gets the thin `` chevron instead, on
+the shared background, in an ink that belongs to the pill rather than being
+foreign to it: `@sidetabs-strip-sep-fg`'s default becomes the sentinel `match`,
+meaning the pill's own foreground. An explicit color still overrides it, so the
+ink remains a one-line taste test.
+
+Both glyphs occupy one display column, so nothing in the width cascade changes:
+a join still costs 1.

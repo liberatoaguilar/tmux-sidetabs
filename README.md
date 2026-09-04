@@ -126,7 +126,8 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-strip-bell-bg` | `#bf616a` | Background of a session holding a bell or an agent `attention` (nord11) |
 | `@sidetabs-strip-bell-fg` | `#eceff4` | Text of a bell / attention pill (nord6) |
 | `@sidetabs-strip-bg` | `black` | The bar's own background — what the last pill's arrow points into |
-| `@sidetabs-strip-sep-fg` | `#2e3440` | Arrow ink where two neighboring pills share a background. Without it the arrow would be drawn in the same color as the surface under it and simply vanish; the thin `` is never emitted anywhere |
+| `@sidetabs-strip-sep-fg` | `match` | Ink for the thin separator drawn where two neighboring pills share a background. `match` is a sentinel meaning *the pill's own foreground color*, so the separator stays inside that pill's palette; any other value is a literal color used at every such join. Color boundaries are unaffected — their arrow is always the left pill's background |
+| `@sidetabs-strip-sep-glyph` | `U+E0B1` | Glyph for a same-background join, the thin powerline chevron. The solid `U+E0B0` arrow drawn at a real color boundary is fixed and has no option |
 | `@sidetabs-strip-current-marker` | `▎` | Marker drawn on the current session's pill — only when that session carries a color of its own, and always at the narrowest cascade stage |
 | `@sidetabs-strip-name-max` | `0` | Hard cap on a session name in the strip, applied before the width cascade starts (`0` = no cap). For short names at *every* width, not only a narrow one |
 | `@sidetabs-strip-assumed-width` | `200` | Width budget for a session with **no** attached client. Its strip is still generated — otherwise attaching would show a stale one — but there is no client to ask how wide it is |
@@ -178,10 +179,26 @@ A `▎` marker appears on the current session's pill **only when that session
 carries a color of its own**: an uncolored current session is already identified
 by its blue, and a colored one has given that slot away.
 
-Every separator is the solid `` (U+E0B0), colored `fg` = the left pill's
-background, `bg` = the right pill's. Where two neighbors share a background the
-arrow would vanish into the surface under it, so it is drawn in
-`@sidetabs-strip-sep-fg` instead. The thin `` (U+E0B1) is never emitted.
+Separators follow the classic powerline rule, and which glyph a join gets depends
+on whether there is a color boundary there at all.
+
+Two pills with **different** backgrounds have a real boundary between them, so
+the separator is the solid arrow (U+E0B0) with `fg` = the left pill's background
+and `bg` = the right pill's — it reads as the left pill's own edge cutting into
+the next one. That is the `>` look, and it is deliberately not configurable.
+
+Two adjacent pills that **share** a background have no boundary to draw, so the
+separator is a thin chevron (U+E0B1, `@sidetabs-strip-sep-glyph`) on the shared
+background instead. A solid arrow there would either vanish into the surface
+under it or, forced into a contrasting ink, read as a heavy dark wedge between
+two pills that are in fact the same color. The chevron's ink is
+`@sidetabs-strip-sep-fg`, whose default is the sentinel `match`: it takes the
+pill's **own** foreground, so a white-on-grey session pill gets a white-ish
+chevron and a black-on-cyan sysinfo pill a black-ish one, each staying inside
+its own pill's colors. Set the option to a color to override that everywhere.
+
+Both glyphs are one display column wide, so a join costs the width cascade
+exactly one column whichever of the two it draws.
 
 ### Edge pills
 

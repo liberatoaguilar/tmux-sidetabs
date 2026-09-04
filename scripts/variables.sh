@@ -236,12 +236,33 @@ DEFAULT_STRIP_IDLE_BG="brightblack"
 DEFAULT_STRIP_IDLE_FG="white"
 # The bar's own background, which the LAST pill's arrow points into.
 DEFAULT_STRIP_BG="black"
-# Arrow ink where two neighbouring pills share a background. With the standard
-# powerline colouring (fg = left pill's bg) such an arrow would be invisible —
-# same ink as the surface it sits on — so a same-colour join gets a dark ink
-# instead. U+E0B1 (the thin bar) is the usual answer and is deliberately NOT
-# used: every separator in this strip is the solid U+E0B0.
-DEFAULT_STRIP_SEP_FG="#2e3440"
+# The classic powerline separator rule has two halves, and the strip draws both:
+#
+#   backgrounds DIFFER  ->  the SOLID arrow U+E0B0, fg = the left pill's bg. A
+#                           real colour boundary, and the arrow is the left
+#                           pill's own edge cutting into the right one. Not
+#                           configurable: there is one right glyph for a
+#                           boundary and this is it.
+#   backgrounds MATCH   ->  no boundary to draw, so a THIN chevron
+#                           (@sidetabs-strip-sep-glyph, U+E0B1 by default) on
+#                           the shared background instead. A solid arrow here
+#                           would either vanish (drawn in the surface's own
+#                           ink) or read as a heavy dark wedge between two
+#                           pills that are actually the same colour.
+#
+# @sidetabs-strip-sep-fg is the chevron's ink. The default is the SENTINEL
+# "match", meaning "use the left pill's own foreground colour" — so a grey idle
+# pill gets a white-ish chevron and a black-on-cyan sysinfo pill a black-ish
+# one, each staying inside its own pill's colour family. Any other value is a
+# literal colour and overrides that for every same-background join, which is
+# what makes a one-line taste test possible.
+DEFAULT_STRIP_SEP_FG="match"
+# The glyph for a same-background join. U+E0B1, the thin powerline chevron —
+# the same one sysinfo.sh joins its own measurements with, and one display
+# column wide exactly like U+E0B0, so the width cascade's arithmetic (a join
+# costs 1) does not care which of the two is drawn. Spelled as bytes: macOS
+# ships bash 3.2, where $'\uXXXX' does not exist.
+DEFAULT_STRIP_SEP_GLYPH=$'\xee\x82\xb1'
 # Marker on the CURRENT session's pill, drawn only when that session carries a
 # colour of its own (@sidetabs_sflag). An uncoloured current session already
 # renders in @sidetabs-strip-current-bg, which is what identifies it; a coloured

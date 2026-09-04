@@ -13,8 +13,9 @@
 #   1  off by default — the plugin does not touch the status line at all
 #   2  one pill per session in stable CREATION order (not name order)
 #   3  each session's string highlights ITSELF, and no other string does
-#   4  every separator is the solid arrow; the thin bar is never drawn
-#   5  a same-background join uses the contrast ink; a differing one does not
+#   4  the classic powerline rule: solid arrow at a colour boundary, thin
+#      chevron where two adjacent pills share a background
+#   5  the chevron's ink defaults to the pill's own fg, and is overridable
 #   6  a session colour beats "current", and only then is the marker drawn
 #  6b  setting or clearing a colour redraws the strip on its own — no tmux hook
 #      fires on a user-option write, so session_flag_set.sh has to do it
@@ -74,8 +75,8 @@ fail() { echo "FAIL: $*"; exit 1; }
 pass() { echo "PASS: $*"; }
 
 TAB="$(printf '\t')"
-ARROW="$(printf '\xee\x82\xb0')"   # U+E0B0, the solid arrow — the only separator
-THIN="$(printf '\xee\x82\xb1')"    # U+E0B1, the thin bar — must never appear
+ARROW="$(printf '\xee\x82\xb0')"   # U+E0B0, the solid arrow — a COLOUR BOUNDARY
+THIN="$(printf '\xee\x82\xb1')"    # U+E0B1, the thin chevron — a SAME-BACKGROUND join
 MARKER="$(printf '\xe2\x96\x8e')"  # U+258E, the current-session marker
 
 tm() { tmux -L "$SOCKET" -f /dev/null "$@"; }
@@ -94,8 +95,11 @@ strip() { tm run-shell "$PLUGIN_DIR/scripts/strip.sh ${1:-}"; }
 stripw() { tm run-shell "SIDETABS_STRIP_TEST_WIDTH=$1 $PLUGIN_DIR/scripts/strip.sh force"; }
 has() { case "$2" in *"$1"*) return 0 ;; esac; return 1; }
 # Pill text only: drop every #[...] style and turn each separator into "|", so
-# an order assertion reads like the strip looks.
-pills() { sl "$1" | sed "s/#\[[^]]*\]//g; s/${ARROW}/|/g"; }
+# an order assertion reads like the strip looks. BOTH separator glyphs collapse
+# to "|" on purpose — which glyph a given join gets is a colour question owned
+# by sections 4 and 5, and every other section here is asserting pill CONTENT
+# and ORDER, which must not change when two neighbours happen to share a colour.
+pills() { sl "$1" | sed "s/#\[[^]]*\]//g; s/${ARROW}/|/g; s/${THIN}/|/g"; }
 # First non-sidetab pane of a window/session — every script that takes a
 # "target" is handed a PANE id, because run-shell feeds its command string to
 # `sh -c` and a session id ("$0", "$1", …) would be eaten as a positional
@@ -193,34 +197,86 @@ for s in zulu mid alpha; do
 done
 pass "each session's string highlights itself and exactly itself"
 
-# === 4. separators ==========================================================
+# === 4. separators: the classic powerline rule ==============================
+# Which glyph a join gets is decided by whether there is a COLOUR BOUNDARY
+# there. In zulu's string: zulu is current (blue), mid and alpha are both idle
+# (brightblack), and the bar background is black. So:
+#
+#   zulu -> mid     blue        -> brightblack   boundary  -> solid arrow
+#   mid  -> alpha   brightblack -> brightblack   SAME      -> thin chevron
+#   alpha-> bar     brightblack -> black         boundary  -> solid arrow
+#
+# The counts are asserted, not just the presence of each glyph: "there is an
+# arrow somewhere" would still pass if every join drew one.
 n_arrows="$(sl zulu | grep -o "$ARROW" | grep -c . || true)"
-[ "$n_arrows" = "3" ] || fail "expected 3 solid arrows (one per pill), got $n_arrows"
-if has "$THIN" "$(sl zulu)"; then fail "the thin U+E0B1 bar was emitted; every separator must be U+E0B0"; fi
-pass "every separator is the solid arrow and the thin bar is never drawn"
+n_thin="$(sl zulu | grep -o "$THIN" | grep -c . || true)"
+[ "$n_arrows" = "2" ] || fail "expected 2 solid arrows (the two colour boundaries), got $n_arrows"
+[ "$n_thin" = "1" ] || fail "expected 1 thin chevron (the one same-background join), got $n_thin"
+pass "a colour boundary draws the solid arrow; a same-background join draws the thin chevron"
 
-# The last pill always arrows out into the bar background.
+# The last pill always separates out into the bar background — a boundary here,
+# so the solid arrow, in the pill's own bg exactly as any other boundary.
 has "#[fg=brightblack,bg=black,nobold]${ARROW}" "$(sl zulu)" \
     || fail "the last pill does not arrow into @sidetabs-strip-bg: $(sl zulu)"
 pass "the last pill arrows into the bar background"
 
-# === 5. same-background joins get the contrast ink ==========================
-# In zulu's string: zulu is current (blue), mid and alpha are both idle
-# (brightblack). The mid->alpha join therefore has matching backgrounds, where
-# the standard powerline fg (= the left pill's bg) would draw the arrow in the
-# same ink as the surface under it and make it vanish.
-has "#[fg=#2e3440,bg=brightblack,nobold]${ARROW}" "$(sl zulu)" \
-    || fail "a same-background join did not use @sidetabs-strip-sep-fg: $(sl zulu)"
-# ...while the differing zulu->mid join keeps the standard powerline colouring.
+# === 5. the chevron's ink, and its sentinel default =========================
+# @sidetabs-strip-sep-fg defaults to the sentinel "match": the chevron is drawn
+# in the LEFT PILL'S OWN foreground, so it stays inside that pill's colour
+# family instead of being a foreign wedge sitting on it. mid is idle, so its fg
+# is white and the mid->alpha chevron is white on brightblack.
+# Anchored on the pill itself — "the mid pill is IMMEDIATELY followed by a
+# chevron in white" — rather than on the separator alone, so this cannot be
+# satisfied by some other join that happens to end up brightblack.
+has "${IDLE} mid ${IDLE}${THIN}" "$(sl zulu)" \
+    || fail "the default same-background ink is not the pill's own fg: $(sl zulu)"
+# The differing zulu->mid join keeps the standard powerline colouring: solid
+# arrow, fg = the left pill's bg. That is the look the strip is built around and
+# the same-background rule must not have touched it.
 has "#[fg=blue,bg=brightblack,nobold]${ARROW}" "$(sl zulu)" \
     || fail "a differing-background join did not use the left pill's bg: $(sl zulu)"
+pass "the same-background chevron defaults to the pill's own fg; a boundary is unaffected"
+
+# An explicit colour overrides the sentinel for every same-background join —
+# one config line, so the ink can be taste-tested without touching the code.
 tm set-option -g @sidetabs-strip-sep-fg '#123456'
 strip force
-has "#[fg=#123456,bg=brightblack,nobold]${ARROW}" "$(sl zulu)" \
-    || fail "@sidetabs-strip-sep-fg is not configurable: $(sl zulu)"
+has "${IDLE} mid #[fg=#123456,bg=brightblack,nobold]${THIN}" "$(sl zulu)" \
+    || fail "an explicit @sidetabs-strip-sep-fg did not override the sentinel: $(sl zulu)"
+if has "${IDLE} mid ${IDLE}${THIN}" "$(sl zulu)"; then
+    fail "the pill's own fg was still used after an explicit ink was configured: $(sl zulu)"
+fi
+# It must not leak into a boundary join, which has no ink to choose.
+has "#[fg=blue,bg=brightblack,nobold]${ARROW}" "$(sl zulu)" \
+    || fail "the explicit sep ink leaked into a colour-boundary join: $(sl zulu)"
 tm set-option -gu @sidetabs-strip-sep-fg
 strip force
-pass "same-background joins use the configurable contrast ink; differing ones do not"
+has "${IDLE} mid ${IDLE}${THIN}" "$(sl zulu)" \
+    || fail "unsetting @sidetabs-strip-sep-fg did not return to the sentinel: $(sl zulu)"
+pass "@sidetabs-strip-sep-fg overrides the sentinel and applies only to same-background joins"
+
+# The same-background GLYPH is configurable too; the boundary arrow is not, and
+# deliberately has no option at all.
+tm set-option -g @sidetabs-strip-sep-glyph ':'
+strip force
+has "#[fg=white,bg=brightblack,nobold]:" "$(sl zulu)" \
+    || fail "@sidetabs-strip-sep-glyph is not configurable: $(sl zulu)"
+if has "$THIN" "$(sl zulu)"; then fail "the default chevron survived an explicit glyph: $(sl zulu)"; fi
+has "#[fg=blue,bg=brightblack,nobold]${ARROW}" "$(sl zulu)" \
+    || fail "@sidetabs-strip-sep-glyph changed the boundary arrow, which is not configurable: $(sl zulu)"
+tm set-option -gu @sidetabs-strip-sep-glyph
+strip force
+has "$THIN" "$(sl zulu)" || fail "unsetting @sidetabs-strip-sep-glyph did not restore U+E0B1"
+pass "the same-background glyph is configurable; the boundary arrow is fixed"
+
+# Both glyphs are ONE display column, so a join costs 1 whichever is drawn and
+# the whole width cascade is unaffected by which one a join happens to get.
+# status-left-length is still the full 200-column budget, and the strip that was
+# fitted into 200 columns is byte-for-byte the one section 2 asserted.
+[ "$(sll zulu)" = "200" ] || fail "the separator rule changed the width budget: [$(sll zulu)]"
+[ "$(pills zulu)" = " zulu | mid | alpha |" ] \
+    || fail "the separator rule changed the pill layout: [$(pills zulu)]"
+pass "a join still costs exactly one column, whichever glyph it draws"
 
 # === 6. session colour beats current; the marker follows the colour =========
 # No session is coloured yet, so no marker may exist anywhere — an uncoloured
@@ -573,6 +629,29 @@ has "#[fg=brightblack,bg=black,nobold]${ARROW}" "$rgt" \
     || fail "the last right pill did not arrow into the bar background: $rgt"
 pass "right pills form their own status-right, individually coloured, joined the same way"
 
+# ...and the same-background half of the rule reaches edge pills too. This is
+# the shape the strip is actually used in: several sysinfo pills all sharing one
+# colour, where a solid arrow at every join draws a row of heavy wedges between
+# pills that are the same colour. Both pills black-on-yellow, so the join is a
+# thin chevron in the left pill's own fg (black), and no arrow at all.
+tm set-option -g @sidetabs-strip-right-2-bg 'yellow'
+tm set-option -g @sidetabs-strip-right-2-fg 'black'
+strip force
+rgt="$(tm show-option -t zulu -qv status-right)"
+has "#[fg=black,bg=yellow,nobold]${THIN}" "$rgt" \
+    || fail "two same-coloured edge pills did not get the thin chevron: $rgt"
+if has "bg=yellow,nobold]${ARROW}" "$rgt"; then
+    fail "a same-background edge-pill join still drew the solid arrow: $rgt"
+fi
+# The last pill still crosses a real boundary into the bar background.
+has "#[fg=yellow,bg=black,nobold]${ARROW}" "$rgt" \
+    || fail "the last right pill did not arrow into the bar background: $rgt"
+pass "adjacent edge pills sharing a colour are joined by the chevron, not a solid arrow"
+tm set-option -gu @sidetabs-strip-right-2-bg
+tm set-option -gu @sidetabs-strip-right-2-fg
+strip force
+rgt="$(tm show-option -t zulu -qv status-right)"
+
 # status-right carries no "current" concept, but the OPTION is per-session
 # (fact 3, same as status-left), so every session still needs its own copy —
 # checked against a session other than the one every other assertion here
@@ -704,7 +783,11 @@ tm set-option -g @sidetabs-strip-left-1 'ab'
 tm set-option -g @sidetabs-strip-left-2 'cd'
 tm set-option -g @sidetabs-strip-right-1 'ef'
 tm set-option -g @sidetabs-strip-right-2 'gh'
-rpills() { tm show-option -t "$1" -qv status-right | sed "s/#\[[^]]*\]//g; s/${ARROW}/|/g"; }
+# Both separator glyphs collapse to "|", for the same reason pills() does it:
+# these assertions are about which pills survived the cascade, not about which
+# glyph joins two pills that happen to share the idle background.
+rpills() { tm show-option -t "$1" -qv status-right \
+    | sed "s/#\[[^]]*\]//g; s/${ARROW}/|/g; s/${THIN}/|/g"; }
 
 stripw 59
 [ "$(pills zulu)" = " ab | cd |${FULL}" ] \

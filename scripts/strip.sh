@@ -86,8 +86,9 @@ RS="$(printf '\x1e')"
 NL="
 "
 # U+E0B0, the SOLID powerline arrow. Spelled as bytes: macOS ships bash 3.2,
-# where $'\uXXXX' is not a thing (it arrived in 4.2). U+E0B1, the thin bar, is
-# never emitted anywhere in this file — every separator is this glyph.
+# where $'\uXXXX' is not a thing (it arrived in 4.2). This is the glyph for a
+# real colour BOUNDARY and it is deliberately not configurable; the
+# same-background separator (SEP_GLYPH, read in section 3) is.
 ARROW="$(printf '\xee\x82\xb0')"
 
 # --- 3. theme ----------------------------------------------------------------
@@ -120,6 +121,12 @@ theme="$(printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
 } <<< "$theme"
 
 MARKER="$(get_tmux_option '@sidetabs-strip-current-marker' "$DEFAULT_STRIP_MARKER")"
+# The glyph drawn where two adjacent pills SHARE a background. Read outside the
+# theme block above on purpose: that block exists to lowercase colour values,
+# and running `tr '[:upper:]' '[:lower:]'` over a multibyte glyph is a locale
+# question nobody needs to have. One display column, exactly like ARROW, so the
+# width cascade's "a join costs 1" holds whichever of the two is emitted.
+SEP_GLYPH="$(get_tmux_option '@sidetabs-strip-sep-glyph' "$DEFAULT_STRIP_SEP_GLYPH")"
 
 # The palette is shared with window flags on purpose (a session colour and a
 # window flag set to slot 3 look the same), and both store an INDEX, so
@@ -710,16 +717,31 @@ fit_stage() {
 
 # --- 7. build one status-left per session ------------------------------------
 # Separator rule, applied uniformly: every separator is the TRAILING cell of the
-# pill to its left, always the solid arrow.
-#   - backgrounds differ : fg = left pill's bg, bg = right pill's bg (standard
-#                          powerline; the arrow reads as the left pill's edge)
-#   - backgrounds MATCH  : fg = @sidetabs-strip-sep-fg, bg = the shared bg.
-#                          Without this the arrow would be drawn in the same
-#                          ink as the surface under it and simply vanish, which
-#                          is what the thin U+E0B1 bar normally solves — but the
-#                          decided look is a solid arrow everywhere.
+# pill to its left, and WHICH GLYPH it is depends on whether there is a colour
+# boundary there at all. This is the classic powerline rule.
+#   - backgrounds differ : the SOLID arrow. fg = left pill's bg, bg = right
+#                          pill's bg — the arrow reads as the left pill's own
+#                          edge cutting into the right one. This is the ">" look
+#                          and it is not configurable.
+#   - backgrounds MATCH  : there is no boundary to draw, so a THIN chevron
+#                          ($SEP_GLYPH, U+E0B1 by default) on the shared
+#                          background instead. A solid arrow here would be drawn
+#                          in the same ink as the surface under it and vanish;
+#                          forcing a contrasting ink on it instead (which this
+#                          strip used to do) just turns every same-colour join
+#                          into a heavy dark wedge between two pills that are
+#                          the same colour — the thing the thin chevron exists
+#                          to avoid.
+#                          Ink = $SEP_FG, whose default is the sentinel "match"
+#                          meaning the LEFT PILL'S OWN fg: a white-on-grey
+#                          session pill gets a white-ish chevron, a black-on-cyan
+#                          sysinfo pill a black-ish one. An explicit colour
+#                          overrides it everywhere.
 #   - the LAST pill      : the "right pill" is the bar background itself, and
 #                          the same match/differ test applies to it too.
+# Both glyphs are ONE display column, so the cascade's arithmetic (a join costs
+# 1, section 6b) is the same either way and nothing above needs to know which
+# one a given join will use.
 BATCH=""
 # A single quote, and the four characters that stand in for one inside a
 # single-quoted string: close, backslash-escaped quote, reopen.
@@ -737,11 +759,20 @@ SQ_ESCAPED="'\\''"
 # one, or the bar background / next chain's first pill for whatever sits at
 # the end of that particular chain.
 append_pill() {
-    local bg="$1" fg="$2" attr="$3" body="$4" bw="$5" nbg="$6" sfg
+    local bg="$1" fg="$2" attr="$3" body="$4" bw="$5" nbg="$6" sfg sep
     out="${out}#[fg=${fg},bg=${bg},${attr}]${body}"
     width=$((width + bw))
-    if [ "$bg" = "$nbg" ]; then sfg="$SEP_FG"; else sfg="$bg"; fi
-    out="${out}#[fg=${sfg},bg=${nbg},nobold]${ARROW}"
+    if [ "$bg" = "$nbg" ]; then
+        # No colour boundary: thin chevron, and by default in the pill's own
+        # ink so it stays inside that pill's colour family.
+        sep="$SEP_GLYPH"
+        if [ "$SEP_FG" = "match" ]; then sfg="$fg"; else sfg="$SEP_FG"; fi
+    else
+        sep="$ARROW"
+        sfg="$bg"
+    fi
+    out="${out}#[fg=${sfg},bg=${nbg},nobold]${sep}"
+    # Both glyphs are one display column, so this is 1 either way.
     width=$((width + 1))
 }
 
