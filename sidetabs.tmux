@@ -18,6 +18,13 @@ register_hooks() {
     # sidebar's own 0.5s tick covers a swallowed one.
     tmux set-hook -g window-renamed \
         "run-shell -b '$SCRIPTS_DIR/refresh.sh'"
+    # A rename changes the KEY the flag store is filed under (session + window
+    # name — window ids do not survive a restart, so names are all there is).
+    # Re-snapshotting here re-files the flag under the new name; the row under
+    # the old name is left behind untouched, which is what brings the colour
+    # back if the window is ever renamed back.
+    tmux set-hook -g 'window-renamed[1]' \
+        "run-shell -b '$SCRIPTS_DIR/flag_store.sh sync'"
     tmux set-hook -g 'session-window-changed[0]' \
         "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
     tmux set-hook -g 'session-window-changed[1]' \
@@ -46,6 +53,12 @@ register_hooks() {
     # header of timer_restore.sh), because seeding a window created LATER from
     # same-name log rows would be a silent billing overcount.
     tmux set-hook -g 'client-attached[2]'        "run-shell -b '$SCRIPTS_DIR/timer_restore.sh boot'"
+    # The same fallback for flag colours, with its own generation flag
+    # (@sidetabs_flag_restored) so disabling one restore cannot make the other
+    # believe this generation is already seeded. Same age gate, same reason:
+    # seeding on a LATER attach would paint a freshly created window with a
+    # long-gone same-named window's colour.
+    tmux set-hook -g 'client-attached[3]'        "run-shell -b '$SCRIPTS_DIR/flag_restore.sh boot'"
     tmux set-hook -g window-linked \
         "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
     tmux set-hook -g window-unlinked \

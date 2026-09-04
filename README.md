@@ -107,6 +107,8 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-flag-fg` | `#2e3440` | Flag pill text color (nord0) |
 | `@sidetabs-flag-key` | `C-c` | Key to cycle the current window's flag color (set to `none` to disable — applies to every key option) |
 | `@sidetabs-flag-picker-key` | `M-c` | Key to open the flag color picker menu (`none` to disable) |
+| `@sidetabs-flag-store` | `~/.local/share/tmux-sidetabs/flags.tsv` | Path to the durable flag-color store (TSV: session, window name, palette index — an empty window name is reserved for a per-session color). Rewritten as a whole-state snapshot on every flag change, so clears persist and rows for sessions/windows that are closed are kept for their return |
+| `@sidetabs-flag-restore` | `on` | `off` to disable re-seeding flag colors from the store — both after a tmux-resurrect restore and via the boot-time `client-attached` fallback |
 | `@sidetabs-timer-key` | `C-t` | Key to start / pause the current window's timer |
 | `@sidetabs-timer-menu-key` | `M-t` | Key to open the timer menu (adjust total, cancel current interval, reset, assign client, register repo) |
 | `@sidetabs-timer-autofocus` | `on` | `off` to disable auto pause/resume when window loses/gains focus |
@@ -290,8 +292,25 @@ original `C-h` / `C-j` / `C-k` bindings.)
   which is what makes a billing boundary crossed while the server was down still
   reset on the next interaction. Each re-seed logs a `restore` event. Seconds
   between the last logged event and the server dying are not recoverable.
-  Disable with `@sidetabs-timer-restore off`. Flag colors have no durable record
-  and still reset with the server.
+  Disable with `@sidetabs-timer-restore off`.
+- **Flag colors survive restarts too.** Every set and every clear — from `C-c`,
+  from the `M-c` picker, and from a window rename — writes the whole live flag
+  state through to `@sidetabs-flag-store`, and the post-restore hook replays it
+  onto the new server, matched by session + window *name* (ids change across
+  restarts; with duplicate names only the first window wins). A window that
+  already carries a flag is never overwritten, a record naming a window that no
+  longer exists is ignored rather than misapplied, and a record whose index no
+  longer fits `@sidetabs-flag-colors` is dropped. Disable with
+  `@sidetabs-flag-restore off`.
+
+  The store is a **snapshot**, not a ledger: each write rewrites it from live
+  state, so a flag you cleared is genuinely gone, while rows for sessions and
+  windows that are not currently open are kept untouched — close a session and
+  its colors are waiting when you open it again. Nothing is ever pruned, so a
+  new session reusing an old name inherits that name's colors. The new store is
+  written to a temp file and moved into place only once every step succeeded,
+  so an unreadable store or a full disk leaves it exactly as it was rather than
+  emptying it.
 - **Restore has a second delivery path.** tmux-continuum skips auto-restore
   entirely when another tmux server was running at startup, or when the server
   is older than `@continuum-restore-max-delay` — resurrect's post-restore hook
@@ -300,7 +319,10 @@ original `C-h` / `C-j` / `C-k` bindings.)
   and only once per server generation (`@sidetabs_timer_restored`): re-seeding
   on a later attach could hand a freshly created window the total of a long-gone
   window with the same name. A restore that fails now says so with a
-  `display-message` instead of being swallowed.
+  `display-message` instead of being swallowed. Flag colors use the same
+  fallback on the next `client-attached` slot, with their own generation flag
+  (`@sidetabs_flag_restored`) so disabling one restore cannot make the other
+  think the generation is already seeded.
 - **Per-tag billing-cycle reset**: a window carrying a tag (`@sidetabs_timer_tag`)
   whose row in the tags file names a reset day (1–31, clamped to the month's real
   length) zeroes itself on that day each month. The check is lazy — it happens on

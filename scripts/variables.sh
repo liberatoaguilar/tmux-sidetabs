@@ -15,6 +15,12 @@ RESTORING_OPTION="@sidetabs_restoring"
 # fallback and a tmux-resurrect restore never both seed the same generation.
 TIMER_RESTORED_OPTION="@sidetabs_timer_restored"
 
+# The same once-per-generation claim for FLAG colours (flag_restore.sh). Kept
+# separate from the timer's flag on purpose: the two restores have independent
+# master switches, so one being disabled must not make the other's fallback
+# think the generation is already seeded.
+FLAG_RESTORED_OPTION="@sidetabs_flag_restored"
+
 # Per-session user options
 COLLAPSED_OPTION="@sidetabs_collapsed"
 WIDTH_OPTION="@sidetabs_width"                   # current expanded width (synced)
@@ -110,6 +116,22 @@ DEFAULT_TIMER_AUTOFOCUS="on"   # auto pause/resume timers on tab focus
 DEFAULT_TIMER_RESTORE="on"     # re-seed timers from the event log after a restore
 DEFAULT_TIMER_LOG="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/timelog.tsv"
 DEFAULT_TIMER_TAGS_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/tags.tsv"
+
+# Flag colours are durable too. FLAG_OPTION above dies with the server (tmux
+# does not save user options, and neither does tmux-resurrect), so every
+# set/clear writes through to this TSV and flag_restore.sh replays it after a
+# restart, matched by session + window NAME. Three tab-separated columns:
+#
+#   session_name <TAB> window_name <TAB> index   -- a WINDOW flag
+#   session_name <TAB>     (empty)   <TAB> index -- a SESSION colour
+#
+# The empty-middle-field shape is reserved for the session colour landing with
+# the bottom strip; flag_restore.sh already skips those rows so the two can
+# share one file, one lock and one restore pass. The store is rewritten as a
+# whole-state SNAPSHOT on every change (see flag_store.sh) rather than patched
+# row by row, which is what makes a clear persist and a rename self-heal.
+DEFAULT_FLAG_STORE="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/flags.tsv"
+DEFAULT_FLAG_RESTORE="on"      # re-seed flag colours from the store after a restore
 
 # Notes. Unlike flags/timers the note text is durable on its own: every set/clear
 # writes through to a TSV store keyed by (session name, window name), which
