@@ -28,10 +28,14 @@
 #          nothing re-renders the strip on a timer, so a swallowed final event
 #          would leave the wrong strip on screen until the next unrelated one.
 #
-# NO WIDTH HANDLING YET. The strip clips at the client edge; the shrink cascade
-# (drop the marker, then edge pills, then truncate names, ...) is a later
-# ticket. status-left-length is set to the strip's own visible width, because
-# tmux's default of 10 would otherwise cut it off after the first pill.
+# IT FITS, IT DOES NOT CLIP. tmux truncates a status line by HARD CUT at the
+# client edge — no ellipsis, no marker, and a 2-column glyph that does not fit
+# is dropped whole — so a clipped strip is indistinguishable from a short one
+# and you cannot tell that three sessions fell off the right-hand edge. Section
+# 6b therefore fits the strip to a per-session width budget by shedding detail
+# in a fixed, predictable order (marker, then right pills, then left pills, then
+# name truncation, then initials, then colour blocks, then a floor that still
+# names the session you are in and counts the ones it could not show).
 #
 # Deliberately NOT `set -e`: this runs from `run-shell` hooks, and a non-zero
 # exit makes tmux surface the failure by dropping the pane into view-mode (the
@@ -75,6 +79,12 @@ set_tmux_option "$STRIP_LAST_OPTION" "$now"
 
 TAB="$(printf '\t')"
 US="$(printf '\x1f')"
+# RS, the record separator for the reserve measurement in section 5c. A
+# status-right's value can legitimately contain a newline, so records there
+# cannot be newline-delimited the way every other tmux -F loop in this file is.
+RS="$(printf '\x1e')"
+NL="
+"
 # U+E0B0, the SOLID powerline arrow. Spelled as bytes: macOS ships bash 3.2,
 # where $'\uXXXX' is not a thing (it arrived in 4.2). U+E0B1, the thin bar, is
 # never emitted anywhere in this file — every separator is this glyph.
@@ -189,17 +199,73 @@ done
 # count — same convention a session name uses. Anything with a special gets a
 # fixed, generous placeholder instead, sized so status-left/-right-length
 # stays big enough not to clip a pill that renders longer than this guess.
-# This is deliberately NOT the precise "measure and reserve" machinery the
-# design doc describes for an UNOWNED side (@sidetabs-strip-reserve) — that
-# reservation is ticket 07's shrink-cascade job; this only has to keep OUR OWN
-# pills from being cut off by tmux's length cap.
-DYNAMIC_PILL_WIDTH=12
+# This is deliberately NOT the same thing as the reserve computed for an
+# UNOWNED side in section 5c: that side is measured for real (its value is
+# already fully expanded by the time we see it), while these are OUR pills,
+# whose values we hold only as unexpanded format source.
+DYNAMIC_PILL_WIDTH="$STRIP_JOB_RESERVE"
 pill_display_width() {
     case "$1" in
         *'#('*|*'#{'*|*%[A-Za-z]*) printf '%s' "$DYNAMIC_PILL_WIDTH" ;;
         *) printf '%s' "${#1}" ;;
     esac
 }
+
+# --- 3c. edge-pill costs, precomputed ----------------------------------------
+# A pill costs   1 (pad) + body + 1 (pad) + 1 (its own trailing arrow).
+# The arrow belongs to the pill on its LEFT, so dropping any pill removes
+# exactly its own cost and leaves every other pill's cost untouched — which is
+# what makes the cumulative sums below correct however many are sacrificed.
+#
+# Measured ONCE here rather than inside the cascade: pill_display_width forks a
+# subshell, and the cascade evaluates up to ~25 candidate states per session.
+LEFT_COST=(); RIGHT_COST=()
+# LEFT_SUFFIX[j] = total cost of left pills j..LEFT_N, i.e. the width left after
+# the j-1 OUTERMOST (leftmost) ones have been dropped. LEFT_SUFFIX[LEFT_N+1]=0.
+LEFT_SUFFIX=()
+# RIGHT_PREFIX[j] = total cost of right pills 1..j, i.e. the width left after
+# the RIGHT_N-j OUTERMOST (rightmost) ones have been dropped. RIGHT_PREFIX[0]=0.
+RIGHT_PREFIX=()
+i=1
+while [ "$i" -le "$LEFT_N" ]; do
+    LEFT_COST[$i]=$(($(pill_display_width "${LEFT_VAL[$i]}") + 3))
+    i=$((i + 1))
+done
+LEFT_SUFFIX[$((LEFT_N + 1))]=0
+i="$LEFT_N"
+while [ "$i" -ge 1 ]; do
+    LEFT_SUFFIX[$i]=$((${LEFT_COST[$i]} + ${LEFT_SUFFIX[$((i + 1))]}))
+    i=$((i - 1))
+done
+RIGHT_PREFIX[0]=0
+i=1
+while [ "$i" -le "$RIGHT_N" ]; do
+    RIGHT_COST[$i]=$(($(pill_display_width "${RIGHT_VAL[$i]}") + 3))
+    RIGHT_PREFIX[$i]=$((${RIGHT_PREFIX[$((i - 1))]} + ${RIGHT_COST[$i]}))
+    i=$((i + 1))
+done
+
+# --- 3d. cascade inputs ------------------------------------------------------
+# Every one of these is validated to a number here rather than at the point of
+# use: an option holding garbage must degrade to the documented default, never
+# make the arithmetic below evaluate a non-number (which under `set -u` would
+# abort the generation and leave the strip stale).
+NAME_MAX="$(get_tmux_option '@sidetabs-strip-name-max' "$DEFAULT_STRIP_NAME_MAX")"
+case "$NAME_MAX" in ''|*[!0-9]*) NAME_MAX=0 ;; esac
+
+ASSUMED_WIDTH="$(get_tmux_option '@sidetabs-strip-assumed-width' "$DEFAULT_STRIP_ASSUMED_WIDTH")"
+case "$ASSUMED_WIDTH" in ''|*[!0-9]*|0) ASSUMED_WIDTH="$DEFAULT_STRIP_ASSUMED_WIDTH" ;; esac
+
+RESERVE_OPT="$(get_tmux_option '@sidetabs-strip-reserve' "$DEFAULT_STRIP_RESERVE")"
+
+# TEST SEAM. Exercising the cascade for real would mean attaching terminals of
+# a dozen different widths; this forces the budget for every session instead, so
+# a test can walk the whole ladder against one detached scratch server. It is an
+# ENVIRONMENT variable rather than a tmux option deliberately: a stray option
+# would persist in a live server and silently mis-fit the user's real strip,
+# while an env var reaches only the one `run-shell` that set it.
+TEST_WIDTH="${SIDETABS_STRIP_TEST_WIDTH:-}"
+case "$TEST_WIDTH" in ''|*[!0-9]*|0) TEST_WIDTH="" ;; esac
 
 # --- 4. enumerate sessions in creation order ---------------------------------
 # STABLE CREATION ORDER, which is session_id order — `list-sessions` sorts by
@@ -221,7 +287,7 @@ sess="$(tmux list-sessions -F "#{session_id}${TAB}f#{$SFLAG_OPTION}${TAB}#{sessi
 [ -n "$sess" ] || exit 0
 
 n=0
-SIDS=(); SNAMES=(); SFLAGS=(); BELLS=(); ATTNS=()
+SIDS=(); SNAMES=(); SFLAGS=(); BELLS=(); ATTNS=(); NAMELEN=()
 IDMAP="$US"
 while IFS="$TAB" read -r sid fval sname; do
     [ -n "$sid" ] || continue
@@ -229,6 +295,12 @@ while IFS="$TAB" read -r sid fval sname; do
     n=$((n + 1))
     SIDS[$n]="$sid"
     SNAMES[$n]="$sname"
+    # Width is counted in CHARACTERS off the RAW name, matching render.sh's
+    # convention (${#label}, ${label:0:avail}) and section 7's escaping: "#"
+    # is doubled for tmux but still occupies one column. A CJK name will
+    # misalign here exactly as a CJK window name misaligns in the sidebar
+    # today — a known limitation, not this cascade's problem to solve.
+    NAMELEN[$n]="${#sname}"
     SFLAGS[$n]="${fval#f}"
     BELLS[$n]=0
     ATTNS[$n]=0
@@ -286,6 +358,156 @@ while IFS="$TAB" read -r wsid wbell wagent; do
     fi
 done <<< "$wins"
 
+# --- 5b. per-session width budget --------------------------------------------
+# The budget is the width of the NARROWEST client attached to that session.
+# Narrowest, because ONE string is generated per session (status-left is a
+# per-session option) and every client on it renders that same string: fitting
+# the widest would clip the narrowest, which is precisely the invisible failure
+# this whole section exists to prevent. Two clients on one session therefore
+# share the narrowest budget — accepted, and recorded as a known limitation.
+#
+# A session with NO attached client still gets a strip — it has to, or attaching
+# would show whatever was generated when it last had one — budgeted at
+# @sidetabs-strip-assumed-width.
+BUDGETS=()
+k=1
+while [ "$k" -le "$n" ]; do BUDGETS[$k]=0; k=$((k + 1)); done
+if [ -z "$TEST_WIDTH" ]; then
+    # #{session_id} resolves in a CLIENT format because tmux's format_defaults
+    # falls back to the client's own session when no session target was given.
+    # #{client_session} (the NAME) is carried too, purely as a fallback for a
+    # build where that does not hold: losing the mapping would silently push
+    # every session onto the assumed width, which is the one failure mode that
+    # would make the whole cascade untrustworthy. The name is LAST so a name
+    # containing whitespace still arrives in one piece.
+    clients="$(tmux list-clients -F "#{client_width}${TAB}#{session_id}${TAB}#{client_session}" 2>/dev/null)"
+    while IFS="$TAB" read -r cw csid cname; do
+        [ -n "$cw" ] || continue
+        case "$cw" in *[!0-9]*) continue ;; esac
+        [ "$cw" -gt 0 ] || continue
+        csid="${csid#\$}"
+        if ! sess_slot "$csid"; then
+            IDX=0
+            j=1
+            while [ "$j" -le "$n" ]; do
+                if [ "${SNAMES[$j]}" = "$cname" ]; then IDX="$j"; break; fi
+                j=$((j + 1))
+            done
+            [ "$IDX" -ge 1 ] || continue
+        fi
+        if [ "${BUDGETS[$IDX]}" -eq 0 ] || [ "$cw" -lt "${BUDGETS[$IDX]}" ]; then
+            BUDGETS[$IDX]="$cw"
+        fi
+    done <<< "$clients"
+fi
+k=1
+while [ "$k" -le "$n" ]; do
+    if [ -n "$TEST_WIDTH" ]; then
+        BUDGETS[$k]="$TEST_WIDTH"
+    elif [ "${BUDGETS[$k]}" -eq 0 ]; then
+        BUDGETS[$k]="$ASSUMED_WIDTH"
+    fi
+    k=$((k + 1))
+done
+
+# --- 5c. reserve for a side the plugin does not own --------------------------
+# The budget covers left + right + reserve COMBINED — it is one status line, not
+# two independent ones.
+#
+# The plugin always owns status-left; it owns status-right only when at least
+# one @sidetabs-strip-right-N is configured. An UNOWNED status-right is content
+# somebody else put there (the user's clock, another plugin, or tmux's own
+# default) and the cascade has no business dropping it — so it is measured and
+# subtracted from the budget, never touched. Its stage in the ladder simply does
+# not exist: with RIGHT_N=0 the stage-2 loop below is empty.
+#
+# ONE tmux call measures every session, because status-right is a per-session
+# option and a session may well override the global. Both the RAW value and its
+# expansion are read in the same format:
+#
+#   #{status-right}     the option verbatim, unexpanded
+#   #{T:status-right}   fully expanded — #{...} resolved, strftime %-specs
+#                       resolved, #[...] style runs still present (we strip
+#                       those; they cost no columns), and any #(shell) job
+#                       silently GONE. Verified on 3.6b: an option holding
+#                       "#(echo hi) %H:%M" expands to " 11:36".
+#
+# That last point is why the job test runs on the RAW value: ticket 06 already
+# established that #(shell) jobs are scheduled asynchronously and cannot be
+# measured synchronously, and the expansion does not even leave a "#(" behind to
+# notice. Records are RS-delimited, not newline-delimited, because a
+# status-right may contain a newline; a US-delimited field split then avoids
+# `read`'s IFS-whitespace collapsing entirely.
+RESERVES=()
+k=1
+while [ "$k" -le "$n" ]; do RESERVES[$k]=0; k=$((k + 1)); done
+
+# measure_reserve <raw> <expanded> -> RW, the columns to keep clear.
+measure_reserve() {
+    local raw="$1" exp="$2" s clean="" njobs=0
+    s="$exp"
+    while :; do
+        case "$s" in *'#['*) ;; *) break ;; esac
+        clean="${clean}${s%%'#['*}"
+        s="${s#*'#['}"
+        # A "]" inside a style value would terminate the style early for tmux
+        # too, so cutting at the first one matches what tmux itself does.
+        s="${s#*]}"
+    done
+    clean="${clean}${s}"
+    # Newlines occupy no columns on the status line.
+    clean="${clean//$NL/}"
+    RW="${#clean}"
+    s="$raw"
+    while :; do
+        case "$s" in *'#('*) ;; *) break ;; esac
+        njobs=$((njobs + 1))
+        s="${s#*'#('}"
+    done
+    # A job whose output tmux has already CACHED does appear in the expansion,
+    # so its columns get counted twice: once measured, once allowed for. That is
+    # the safe direction to be wrong in — over-reserving costs our own strip one
+    # cascade stage, under-reserving overruns somebody else's content — and it
+    # keeps the reserve stable rather than jumping about as jobs complete.
+    if [ "$njobs" -gt 0 ]; then
+        case "$RESERVE_OPT" in
+            # "auto" (or anything non-numeric): what could be measured, plus a
+            # generous allowance for each job that could not.
+            ''|*[!0-9]*) RW=$((RW + njobs * STRIP_JOB_RESERVE)) ;;
+            # An explicit number is the user telling us how wide their side
+            # really renders; it replaces the estimate outright.
+            *) RW="$RESERVE_OPT" ;;
+        esac
+    fi
+}
+
+if [ "$RIGHT_N" -eq 0 ]; then
+    # One extra tmux invocation (~5ms), and only when the plugin does not own
+    # the right side. It cannot be folded into section 4's list-sessions: a
+    # status-right can contain anything at all, including tabs and newlines,
+    # which would wreck that call's tab-delimited, name-last parse.
+    recs="$(tmux list-sessions \
+        -F "#{session_id}${US}#{status-right}${US}#{T:status-right}${RS}" 2>/dev/null)"
+    # The format always emits its separators, so a live server cannot answer
+    # empty here — that means the call failed. Generating a strip with no
+    # reserve at all would overrun content the plugin does not own, so this is
+    # a no-op like every other failed tmux call in this file.
+    [ -n "$recs" ] || exit 0
+    while IFS= read -r -d "$RS" rec; do
+        rsid="${rec%%"$US"*}"
+        # tmux ends every -F line with a newline, which lands at the FRONT of
+        # the next RS-delimited record. The id never contains one, so
+        # everything up to the last newline is that stray prefix.
+        rsid="${rsid##*"$NL"}"
+        rsid="${rsid#\$}"
+        case "$rsid" in ''|*[!0-9]*) continue ;; esac
+        sess_slot "$rsid" || continue
+        rrest="${rec#*"$US"}"
+        measure_reserve "${rrest%%"$US"*}" "${rrest#*"$US"}"
+        RESERVES[$IDX]="$RW"
+    done <<< "$recs"
+fi
+
 # --- 6. colour resolution ----------------------------------------------------
 # resolve_pills <viewer slot>: fill PBG/PFG/PATTR for every pill, from the point
 # of view of the session whose string is being generated. First match wins:
@@ -297,7 +519,15 @@ done <<< "$wins"
 #
 # Same precedence the sidebar's window rows use, so a session pill and a window
 # row never disagree about what matters most.
-PBG=(); PFG=(); PATTR=(); MARK=0
+#
+# DEGRADE[k] is set here too: 1 for an ORDINARY pill (no session colour, no
+# bell, no agent attention), 0 for one carrying information. Cascade stages 5
+# and 6 — the ones that shorten a name to an initial and then blank it to a bare
+# colour block — may only touch an ordinary pill, so a pill you deliberately
+# coloured, or one that is asking for your attention, is the LAST thing to lose
+# its text rather than the first. It does not depend on which session is
+# viewing, so it is computed once per generation like the rest of this pass.
+PBG=(); PFG=(); PATTR=(); DEGRADE=(); MARK=0
 resolve_pills() {
     local v="$1" k idx
     MARK=0
@@ -313,12 +543,20 @@ resolve_pills() {
 
         if [ "${BELLS[$k]}" = "1" ] || [ "${ATTNS[$k]}" = "1" ]; then
             PBG[$k]="$BELL_BG"; PFG[$k]="$BELL_FG"; PATTR[$k]="bold"
+            DEGRADE[$k]=0
         elif [ "$idx" -ge 1 ]; then
             PBG[$k]="${PALETTE[$((idx - 1))]}"; PFG[$k]="$FLAG_FG"; PATTR[$k]="bold"
+            DEGRADE[$k]=0
         elif [ "$k" = "$v" ]; then
             PBG[$k]="$CUR_BG"; PFG[$k]="$CUR_FG"; PATTR[$k]="bold"
+            # An uncoloured CURRENT session is "ordinary" by this flag, and is
+            # still never shortened — every use site excludes the viewer's own
+            # pill explicitly, because the whole point of the floor is that you
+            # can always read where you are.
+            DEGRADE[$k]=1
         else
             PBG[$k]="$IDLE_BG"; PFG[$k]="$IDLE_FG"; PATTR[$k]="nobold"
+            DEGRADE[$k]=1
         fi
 
         # The marker is drawn ONLY when the current session carries a colour of
@@ -333,6 +571,141 @@ resolve_pills() {
         if [ "$k" = "$v" ] && [ "$idx" -ge 1 ]; then MARK=1; fi
         k=$((k + 1))
     done
+}
+
+# --- 6b. the width cascade ---------------------------------------------------
+# tmux does not warn you that it truncated: it cuts at the client edge, mid-pill
+# if that is where the edge falls, with no ellipsis and no marker, and it drops
+# a 2-column glyph whole if only one column is left. A strip that ran out of
+# room therefore looks exactly like a strip that had nothing more to say. So
+# instead of being cut, the strip SHEDS detail, in this order, each stage
+# applied only if the one before it did not fit:
+#
+#   0  everything: marker, full names, all edge pills
+#   1  drop the current-session marker
+#   2  drop right-side pills, OUTERMOST (rightmost) first, one per stage
+#   3  drop left-side pills, OUTERMOST (leftmost) first, one per stage
+#   4  truncate session names: 12, then 8, then 6, then 4
+#   5  non-current UNFLAGGED sessions -> single initial
+#   6  non-current UNFLAGGED sessions -> colour block, no text
+#   7  floor: marker + current session name + " +N"
+#
+# WHY THE RIGHT SIDE GOES BEFORE THE LEFT PILLS: on the machine this was
+# designed for, the right side carries the clock and user@host, both of which
+# are already in the macOS menu bar two centimetres higher up. The left pills
+# (load, memory, disk) are not duplicated anywhere, so they are worth more.
+#
+# WHY 5 AND 6 SKIP FLAGGED PILLS: a session colour is something you set on
+# purpose and a bell/attention pill is something asking for you. Those are the
+# pills a narrow bar exists to show. An ordinary session that you have said
+# nothing about is what gets shortened first, and every ordinary pill is spent
+# before an informative one is touched at all — stage 6 blanks only ordinary
+# pills too, so an informative pill keeps its full name even when its neighbours
+# are bare colour blocks.
+#
+# WHY THE FLOOR ALWAYS DRAWS THE MARKER: normally it appears only on a coloured
+# current session (an uncoloured one is identified by its own blue), but at the
+# floor the strip is a single pill and the marker is the only thing saying that
+# pill is where you are, rather than the only session that would fit.
+#
+# The stage is chosen by ARITHMETIC ONLY — no candidate string is ever built —
+# so walking the whole ladder costs a couple of dozen integer loops per session,
+# not a couple of dozen string concatenations.
+ST_MARK=0; ST_RDROP=0; ST_LDROP=0; ST_NAMEMAX=0; ST_INITIALS=0; ST_BLOCKS=0; ST_FLOOR=0
+
+# sess_width <viewer slot> -> SW, the width of the session-pill chain under the
+# stage state currently in ST_*. Each pill is 1 pad + body + 1 pad + 1 arrow.
+sess_width() {
+    local v="$1" k len w=0
+    k=1
+    while [ "$k" -le "$n" ]; do
+        if [ "$k" != "$v" ] && [ "${DEGRADE[$k]}" = "1" ] && [ "$ST_BLOCKS" = "1" ]; then
+            # A colour block is one column of pill plus its arrow. No padding:
+            # padding on a body with no text is just a wider block.
+            w=$((w + 2))
+        elif [ "$k" != "$v" ] && [ "${DEGRADE[$k]}" = "1" ] && [ "$ST_INITIALS" = "1" ]; then
+            w=$((w + 4))
+        else
+            len="${NAMELEN[$k]}"
+            if [ "$ST_NAMEMAX" -gt 0 ] && [ "$len" -gt "$ST_NAMEMAX" ]; then
+                len="$ST_NAMEMAX"
+            fi
+            w=$((w + len + 3))
+        fi
+        k=$((k + 1))
+    done
+    if [ "$ST_MARK" = "1" ]; then w=$((w + 1)); fi
+    SW="$w"
+}
+
+# total_width <viewer slot> -> TW. Left pills + session pills + right pills.
+# The unowned-side reserve is NOT included here; it is subtracted from the
+# budget instead, which is the same arithmetic said the way it actually is: the
+# reserve is not ours to spend.
+total_width() {
+    local lw rw
+    lw="${LEFT_SUFFIX[$((ST_LDROP + 1))]}"
+    rw="${RIGHT_PREFIX[$((RIGHT_N - ST_RDROP))]}"
+    sess_width "$1"
+    TW=$((lw + SW + rw))
+}
+
+# fit_stage <viewer slot> <avail>: walk the ladder, stop at the first stage that
+# fits, leave that stage in ST_*. Always succeeds — the floor is a stage, not a
+# failure — because a strip that cannot be fitted must still be a strip.
+fit_stage() {
+    local v="$1" avail="$2" i t
+
+    ST_MARK="$MARK"; ST_RDROP=0; ST_LDROP=0; ST_NAMEMAX="$NAME_MAX"
+    ST_INITIALS=0; ST_BLOCKS=0; ST_FLOOR=0
+    total_width "$v"; [ "$TW" -le "$avail" ] && return 0
+
+    # 1 — the marker. A no-op when the current session is unflagged, since none
+    # was drawn; the cascade just falls through to the next stage.
+    ST_MARK=0
+    total_width "$v"; [ "$TW" -le "$avail" ] && return 0
+
+    # 2 — right pills, rightmost first. Empty when the plugin does not own that
+    # side: an unowned side is reserved, never dropped, so it has no stage.
+    i=1
+    while [ "$i" -le "$RIGHT_N" ]; do
+        ST_RDROP="$i"
+        total_width "$v"; [ "$TW" -le "$avail" ] && return 0
+        i=$((i + 1))
+    done
+
+    # 3 — left pills, leftmost first.
+    i=1
+    while [ "$i" -le "$LEFT_N" ]; do
+        ST_LDROP="$i"
+        total_width "$v"; [ "$TW" -le "$avail" ] && return 0
+        i=$((i + 1))
+    done
+
+    # 4 — name truncation. A step at or above a cap already in force by
+    # @sidetabs-strip-name-max would be a no-op, so it is skipped rather than
+    # burning a whole stage on an unchanged width.
+    # Unquoted on purpose — word splitting is how the space-separated ladder
+    # becomes a sequence of steps.
+    # shellcheck disable=SC2086
+    for t in $STRIP_NAME_STEPS; do
+        if [ "$ST_NAMEMAX" -gt 0 ] && [ "$t" -ge "$ST_NAMEMAX" ]; then continue; fi
+        ST_NAMEMAX="$t"
+        total_width "$v"; [ "$TW" -le "$avail" ] && return 0
+    done
+
+    # 5 / 6 — ordinary pills give up their text, first to an initial and then
+    # to a bare block of their colour.
+    ST_INITIALS=1
+    total_width "$v"; [ "$TW" -le "$avail" ] && return 0
+    ST_BLOCKS=1
+    total_width "$v"; [ "$TW" -le "$avail" ] && return 0
+
+    # 7 — the floor. One pill: which session you are in, and how many you cannot
+    # see. Truthful at any width, and it never leaves you guessing where you are.
+    ST_FLOOR=1
+    ST_MARK=1
+    return 0
 }
 
 # --- 7. build one status-left per session ------------------------------------
@@ -372,34 +745,84 @@ append_pill() {
     width=$((width + 1))
 }
 
-# --- 7b. the right pill chain, built ONCE ------------------------------------
-# Edge pills carry no "current" concept, so — unlike the session chain — this
-# side's content and colours are IDENTICAL for every session's string; only
-# the TARGET of the set-option differs, because status-right is a per-session
-# option exactly like status-left (fact 3), so every session still needs its
-# own copy set or clients on that session would see none. Built once here and
-# reused (already single-quote-escaped) inside build_one below, rather than
-# repeating the same string work once per session.
-RIGHT_OUT=""; RIGHT_Q=""; RIGHT_WIDTH=0
-if [ "$RIGHT_N" -gt 0 ]; then
-    out=""; width=0
+# --- 7b. the right pill chain ------------------------------------------------
+# build_right_chain <keep>: the first <keep> right pills, in order, into
+# R_OUT/R_WIDTH. Edge pills carry no "current" concept, so this side's content
+# and colours are identical for every session — but the CASCADE is not, because
+# each session has its own width budget, so a session on a 90-column laptop can
+# be showing two right pills while one on a 200-column display shows four. It is
+# therefore built per session rather than once.
+#
+# status-right is a per-session option exactly like status-left (fact 3), so
+# every session needs its own copy set regardless.
+#
+# `local out`/`local width` here on purpose: append_pill writes to whichever
+# $out/$width is in scope at the call site, so these locals keep the right
+# chain's string out of the caller's status-left.
+R_OUT=""; R_WIDTH=0
+build_right_chain() {
+    local keep="$1" k out="" width=0 nbg
     k=1
-    while [ "$k" -le "$RIGHT_N" ]; do
-        esc="${RIGHT_VAL[$k]}"
-        body=" ${esc} "
-        if [ "$k" -lt "$RIGHT_N" ]; then rnbg="${RIGHT_BG[$((k + 1))]}"; else rnbg="$STRIP_BG"; fi
-        append_pill "${RIGHT_BG[$k]}" "${RIGHT_FG[$k]}" "nobold" "$body" \
-            "$(($(pill_display_width "$esc") + 2))" "$rnbg"
+    while [ "$k" -le "$keep" ]; do
+        if [ "$k" -lt "$keep" ]; then nbg="${RIGHT_BG[$((k + 1))]}"; else nbg="$STRIP_BG"; fi
+        # A pill's VALUE is NOT escaped the way a session name is: a session
+        # name is literal text a stray "#" would corrupt, but a pill's value IS
+        # tmux format syntax on purpose (typically a #(shell command)) and must
+        # reach the option unmangled for tmux to expand it at render time.
+        append_pill "${RIGHT_BG[$k]}" "${RIGHT_FG[$k]}" "nobold" " ${RIGHT_VAL[$k]} " \
+            "$((${RIGHT_COST[$k]} - 1))" "$nbg"
         k=$((k + 1))
     done
-    RIGHT_OUT="$out"
-    RIGHT_WIDTH="$width"
-    RIGHT_Q="${RIGHT_OUT//$SQ/$SQ_ESCAPED}"
-fi
+    R_OUT="$out"; R_WIDTH="$width"
+}
+
+# build_floor <viewer slot>: cascade stage 7. One pill, the current session, and
+# a count of everything that did not fit. Appends to the CALLER's $out/$width.
+build_floor() {
+    local v="$1" avail="$2" others=$((n - 1)) name esc suffix bw over newlen
+    suffix=""
+    # "+0" would be a lie dressed as information; a one-session server's floor
+    # is just the session.
+    if [ "$others" -gt 0 ]; then suffix=" +${others}"; fi
+    name="${SNAMES[$v]}"
+    # marker + pad + name + suffix + pad, then append_pill adds the arrow.
+    bw=$((2 + ${#name} + ${#suffix} + 1))
+    if [ $((bw + 1)) -gt "$avail" ]; then
+        # Below the floor there is nothing left to shed, so the NAME gives way
+        # rather than the count: a hard cut would take the "+N" off the end,
+        # and "how many sessions am I not seeing" is the part you cannot infer
+        # from anything else on screen. One character of name is the minimum;
+        # narrower than that tmux clips, and nothing can be done about it.
+        over=$((bw + 1 - avail))
+        newlen=$((${#name} - over))
+        if [ "$newlen" -lt 1 ]; then newlen=1; fi
+        name="${name:0:newlen}"
+        bw=$((2 + ${#name} + ${#suffix} + 1))
+    fi
+    esc="${name//#/##}"
+    append_pill "${PBG[$v]}" "${PFG[$v]}" "${PATTR[$v]}" \
+        "${MARKER} ${esc}${suffix} " "$bw" "$STRIP_BG"
+}
 
 build_one() {
-    local v="$1" k out="" width=0 bg fg attr body name esc nbg width_add
+    local v="$1" k out="" width=0 bg fg attr body name esc nbg width_add len
+    local budget reserve avail ll
     resolve_pills "$v"
+
+    # BUDGET = what this session's narrowest client can show, MINUS the columns
+    # reserved for a side the plugin does not own. What is left is what the
+    # cascade may spend on left pills + session pills + our own right pills.
+    budget="${BUDGETS[$v]}"
+    reserve="${RESERVES[$v]}"
+    avail=$((budget - reserve))
+    # A reserve wider than the whole client (a mis-set @sidetabs-strip-reserve,
+    # or a genuinely enormous status-right) must not make the arithmetic go
+    # negative and produce a nonsense stage: clamp, fall to the floor, and let
+    # tmux clip. Still a strip, still says where you are.
+    if [ "$avail" -lt 1 ]; then avail=1; fi
+    fit_stage "$v" "$avail"
+
+    build_right_chain $((RIGHT_N - ST_RDROP))
 
     # Left edge pills, outermost (1) first, prepended directly into the SAME
     # status-left string as the session pills — this is the "join" the design
@@ -408,41 +831,79 @@ build_one() {
     # neighbour, because that is exactly what it is. A live server always has
     # at least one session (guarded above), so PBG[1] always exists.
     #
+    # ST_LDROP of them have been sacrificed by cascade stage 3, outermost
+    # (leftmost) first, so this starts at ST_LDROP+1 rather than at 1.
+    #
     # A pill's VALUE is NOT escaped the way a session name is: a session name
     # is literal text a stray "#" would corrupt, but a pill's value IS tmux
     # format syntax on purpose (typically a #(shell command)) and must reach
     # the option unmangled for tmux to expand it at render time.
-    k=1
+    k=$((ST_LDROP + 1))
     while [ "$k" -le "$LEFT_N" ]; do
-        esc="${LEFT_VAL[$k]}"
-        body=" ${esc} "
-        if [ "$k" -lt "$LEFT_N" ]; then nbg="${LEFT_BG[$((k + 1))]}"; else nbg="${PBG[1]}"; fi
+        body=" ${LEFT_VAL[$k]} "
+        if [ "$k" -lt "$LEFT_N" ]; then
+            nbg="${LEFT_BG[$((k + 1))]}"
+        elif [ "$ST_FLOOR" = "1" ]; then
+            # Unreachable as the ladder stands (stage 3 has dropped every left
+            # pill by the time stage 7 is reached, so this loop does not run at
+            # the floor), but the join has to be right if the order ever moves.
+            nbg="${PBG[$v]}"
+        else
+            nbg="${PBG[1]}"
+        fi
         append_pill "${LEFT_BG[$k]}" "${LEFT_FG[$k]}" "nobold" "$body" \
-            "$(($(pill_display_width "$esc") + 2))" "$nbg"
+            "$((${LEFT_COST[$k]} - 1))" "$nbg"
         k=$((k + 1))
     done
 
-    k=1
-    while [ "$k" -le "$n" ]; do
-        bg="${PBG[$k]}"; fg="${PFG[$k]}"; attr="${PATTR[$k]}"
-        name="${SNAMES[$k]}"
-        # A literal "#" in a session name would be read as the start of a format
-        # sequence ("#{", "#[", or a single-letter alias) when tmux expands the
-        # status line. Doubling it is tmux's own escape for a literal hash.
-        esc="${name//#/##}"
-        body=" ${esc} "
-        # Width is counted in CHARACTERS off the RAW name — "##" is one column
-        # on screen, and style escapes do not count toward status-left-length at
-        # all. Same convention render.sh uses for the sidebar.
-        width_add=$((${#name} + 2))
-        if [ "$k" = "$v" ] && [ "$MARK" = "1" ]; then
-            body="${MARKER}${body}"
-            width_add=$((width_add + 1))
-        fi
-        if [ "$k" -lt "$n" ]; then nbg="${PBG[$((k + 1))]}"; else nbg="$STRIP_BG"; fi
-        append_pill "$bg" "$fg" "$attr" "$body" "$width_add" "$nbg"
-        k=$((k + 1))
-    done
+    if [ "$ST_FLOOR" = "1" ]; then
+        build_floor "$v" "$((avail - width - R_WIDTH))"
+    else
+        k=1
+        while [ "$k" -le "$n" ]; do
+            bg="${PBG[$k]}"; fg="${PFG[$k]}"; attr="${PATTR[$k]}"
+            name="${SNAMES[$k]}"
+            if [ "$k" != "$v" ] && [ "${DEGRADE[$k]}" = "1" ] && [ "$ST_BLOCKS" = "1" ]; then
+                # Cascade stage 6: no text at all, just a block of the pill's own
+                # colour. Still one pill per session, so the strip still tells you
+                # how many there are and which one is ringing.
+                body=" "
+                width_add=1
+            elif [ "$k" != "$v" ] && [ "${DEGRADE[$k]}" = "1" ] && [ "$ST_INITIALS" = "1" ]; then
+                # Cascade stage 5. First CHARACTER, not first byte — bash's
+                # substring operator is character-based in a UTF-8 locale, the same
+                # assumption render.sh's ${label:0:avail} already makes.
+                esc="${name:0:1}"
+                body=" ${esc//#/##} "
+                width_add=3
+            else
+                len="${#name}"
+                # Cascade stage 4, and the @sidetabs-strip-name-max hard cap, which
+                # is the same operation applied before the cascade starts.
+                if [ "$ST_NAMEMAX" -gt 0 ] && [ "$len" -gt "$ST_NAMEMAX" ]; then
+                    name="${name:0:$ST_NAMEMAX}"
+                    len="$ST_NAMEMAX"
+                fi
+                # A literal "#" in a session name would be read as the start of a
+                # format sequence ("#{", "#[", or a single-letter alias) when tmux
+                # expands the status line. Doubling it is tmux's own escape for a
+                # literal hash.
+                esc="${name//#/##}"
+                body=" ${esc} "
+                # Width is counted in CHARACTERS off the RAW name — "##" is one
+                # column on screen, and style escapes do not count toward
+                # status-left-length at all. Same convention render.sh uses.
+                width_add=$((len + 2))
+                if [ "$k" = "$v" ] && [ "$ST_MARK" = "1" ]; then
+                    body="${MARKER}${body}"
+                    width_add=$((width_add + 1))
+                fi
+            fi
+            if [ "$k" -lt "$n" ]; then nbg="${PBG[$((k + 1))]}"; else nbg="$STRIP_BG"; fi
+            append_pill "$bg" "$fg" "$attr" "$body" "$width_add" "$nbg"
+            k=$((k + 1))
+        done
+    fi
     [ -n "$out" ] || return 1
 
     # Single quotes, and every embedded quote closed-escaped-reopened the shell
@@ -456,23 +917,48 @@ build_one() {
     # Built out of named characters rather than written as an escape soup
     # (${out//\'/\'\\\'\'} looks right and is not — it yields "\'\\'\'").
     local q="${out//$SQ/$SQ_ESCAPED}"
+
+    # status-left-length is the COLUMNS THE LEFT SIDE MAY OCCUPY, not the width
+    # it actually came out at. tmux's default is 10, which would cut the strip
+    # off after the first pill, so it has to be set to something; the question
+    # is what.
+    #
+    # The budget minus the reserved columns minus our own right chain is what
+    # the cascade just fitted the left side into, so it is never smaller than
+    # the string above — the cap can never clip content the cascade decided to
+    # keep. And it is never larger, which makes tmux's own cap a HARD BACKSTOP
+    # on overrunning a side we do not own: if one of our own #(shell) edge pills
+    # renders wider than the placeholder width guessed for it, tmux cuts our
+    # pill rather than letting it run over the user's clock. (The design doc
+    # says "set each length to the full budget"; this is that, tightened by the
+    # part of the budget that was never ours to spend.)
+    ll=$((avail - R_WIDTH))
+    if [ "$ll" -lt 1 ]; then ll=1; fi
+
     # DELIVERED AS ONE BATCH, not one `tmux set-option` per session. The argv
     # path caps at ~16KB ("command too long", measured in bytes — the ceiling
     # that once capped notes), while `source-file` has no such ceiling; and each
     # tmux PROCESS invocation costs ~5ms while each command inside one costs
     # ~nothing. So a ten-session server pays one fork, not twenty.
     BATCH="${BATCH}set-option -t '\$${SIDS[$v]}' status-left '${q}'
-set-option -t '\$${SIDS[$v]}' status-left-length ${width}
+set-option -t '\$${SIDS[$v]}' status-left-length ${ll}
 "
     # status-right is written ONLY when at least one right pill is configured
     # (RIGHT_N > 0) — a side whose -1 is unset is NEVER touched by this
     # plugin, not even to clear it, so a status-right the USER owns (or that a
     # different plugin owns) is left exactly alone. This is the same house
     # rule section 14 of the smoke test exercises for the strip's own master
-    # switch: an unconfigured/off path is a no-op, never a clear.
+    # switch: an unconfigured/off path is a no-op, never a clear. That side is
+    # measured and RESERVED in section 5c instead, which is why it can be left
+    # alone and still not be overrun.
+    #
+    # When the plugin DOES own it, an empty write is correct rather than a
+    # violation of that rule: the cascade dropping every right pill at a narrow
+    # width is a decision about our own content, not a failure.
     if [ "$RIGHT_N" -gt 0 ]; then
-        BATCH="${BATCH}set-option -t '\$${SIDS[$v]}' status-right '${RIGHT_Q}'
-set-option -t '\$${SIDS[$v]}' status-right-length ${RIGHT_WIDTH}
+        local rq="${R_OUT//$SQ/$SQ_ESCAPED}"
+        BATCH="${BATCH}set-option -t '\$${SIDS[$v]}' status-right '${rq}'
+set-option -t '\$${SIDS[$v]}' status-right-length ${R_WIDTH}
 "
     fi
     return 0

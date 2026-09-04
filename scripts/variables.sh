@@ -223,3 +223,57 @@ DEFAULT_STRIP_SEP_FG="#2e3440"
 # one has given that slot away, so it needs the marker instead. U+258E, spelled
 # as bytes because macOS ships bash 3.2 and $'\uXXXX' is a bash 4.2 feature.
 DEFAULT_STRIP_MARKER=$'\xe2\x96\x8e'
+
+# --- Session strip: the width cascade ----------------------------------------
+# tmux truncates a status line by HARD CUT at the client edge: no ellipsis, no
+# marker, and a 2-column glyph that does not fit is dropped whole. Silent
+# clipping is therefore invisible to the user — you cannot tell a strip that
+# ends at "proj" from one whose last three sessions fell off the edge. So the
+# strip sheds detail in a fixed, announced order instead (see strip.sh section
+# 6b), and these are the knobs that order runs against.
+
+# Hard cap on a session name in the strip (@sidetabs-strip-name-max), applied at
+# stage 0 INDEPENDENTLY of the cascade: 0 means no cap, and any other value
+# truncates every name before the fitting even starts. For someone who wants
+# short names at every width, not only at a narrow one.
+DEFAULT_STRIP_NAME_MAX="0"
+
+# Width budget for a session with NO attached client
+# (@sidetabs-strip-assumed-width). A detached session's strip is still generated
+# — it has to be, or attaching would show a stale one until the next event — but
+# there is no client to ask how wide it is. 200 is wider than most terminals, so
+# a detached session degrades only if it would be unreadable on any of them.
+DEFAULT_STRIP_ASSUMED_WIDTH="200"
+
+# Columns to reserve for a side the plugin does NOT own
+# (@sidetabs-strip-reserve), when that side's width cannot be measured.
+#
+# The plugin always owns status-left (the session pills live there). It owns
+# status-right only when @sidetabs-strip-right-1 is set; otherwise status-right
+# belongs to the user (or to another plugin, or to tmux's own default) and must
+# be RESERVED — reserved, never overrun and never dropped, since the cascade has
+# no right to sacrifice content it did not write.
+#
+# Measuring it: expand that side with #{T:status-right} (which resolves #{...}
+# and strftime %-specs), strip the #[...] style runs, count what is left. That
+# is exact for anything static. It cannot work for a #(shell) job: ticket 06
+# established empirically that those are scheduled ASYNCHRONOUSLY, and the
+# expansion simply drops an unfinished job to the empty string — verified on
+# 3.6b, where an option holding "#(echo hi) %H:%M" expands to " 11:36" with no
+# trace of the job at all. So the presence of a job is detected on the RAW
+# value, not on the expansion, and the reserve falls back to this option.
+#
+# "auto" (the default) = the measured width of everything that COULD be measured
+# plus STRIP_JOB_RESERVE columns for each #(job) that could not — sensible
+# because a status-right is usually mostly literal with one or two short jobs in
+# it. A plain NUMBER overrides that estimate entirely for a side carrying a job,
+# for anyone who knows exactly how wide theirs renders.
+DEFAULT_STRIP_RESERVE="auto"
+# Columns allowed per unmeasurable #(shell) job under "auto". Deliberately
+# generous: under-reserving overruns content the user owns, while over-reserving
+# only degrades our own strip one stage early.
+STRIP_JOB_RESERVE="12"
+
+# The name-truncation ladder (cascade stage 4), tried in this order. 12 keeps
+# most names whole, 4 is still enough to tell "work" from "logs".
+STRIP_NAME_STEPS="12 8 6 4"

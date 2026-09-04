@@ -31,6 +31,22 @@
 #      way session pills are; an unconfigured side is never written; no edge
 #      pills configured is byte-identical to the session-only strip
 #  17  sysinfo.sh: one measurement at a time, and the bare call is unchanged
+#  18  the width cascade, every stage asserted at the exact budget that selects
+#      it: marker, right pills outermost first, left pills outermost first,
+#      name truncation 12/8/6/4, initials, colour blocks
+#  19  stages 5 and 6 never degrade a coloured or attention-holding pill while
+#      an ordinary one remains
+#  20  the floor: current session + "+N", with the marker always drawn
+#  21  an unowned side is measured and reserved, never overrun and never
+#      dropped; an unmeasurable #(job) falls back to @sidetabs-strip-reserve
+#  22  a session with no attached client is budgeted at the assumed width
+#  23  @sidetabs-strip-name-max, a hard cap independent of the cascade
+#  24  an impossible budget draws the floor rather than clearing the strip
+#
+# Section 11 covers the other half of "resizing re-fits the strip": the
+# client-resized hook is registered to strip.sh by the plugin itself. The budget
+# it would then recompute is exercised here through SIDETABS_STRIP_TEST_WIDTH,
+# because a scratch server in a test harness has no terminal to attach.
 #
 # -f /dev/null is on EVERY tmux call, not just the first: without it a new
 # server on this socket auto-loads the user's ~/.tmux.conf, which run-shells
@@ -68,6 +84,12 @@ sll() { tm show-option -t "$1" -qv status-left-length; }
 # run-shell WITHOUT -b: it blocks until the script finishes, so an assertion on
 # the next line is reading the finished result, not racing it.
 strip() { tm run-shell "$PLUGIN_DIR/scripts/strip.sh ${1:-}"; }
+# The same thing with the width cascade's budget forced. Exercising the cascade
+# for real would mean attaching terminals of a dozen different widths; the
+# SIDETABS_STRIP_TEST_WIDTH seam forces the budget for every session instead. It
+# is an environment variable, so it reaches exactly this one run — run-shell
+# hands its command string to `sh -c`, which applies the assignment to it.
+stripw() { tm run-shell "SIDETABS_STRIP_TEST_WIDTH=$1 $PLUGIN_DIR/scripts/strip.sh force"; }
 has() { case "$2" in *"$1"*) return 0 ;; esac; return 1; }
 # Pill text only: drop every #[...] style and turn each separator into "|", so
 # an order assertion reads like the strip looks.
@@ -86,6 +108,7 @@ IDLE='#[fg=white,bg=brightblack,nobold]'
 CUR='#[fg=black,bg=blue,bold]'
 GREEN='#[fg=#2e3440,bg=#a3be8c,bold]'    # palette slot 2, @sidetabs-flag-fg
 BELLP='#[fg=#eceff4,bg=#bf616a,bold]'
+BLUEP='#[fg=#2e3440,bg=#81a1c1,bold]'    # palette slot 3, @sidetabs-flag-fg
 
 # === setup ==================================================================
 # Session names are chosen so NAME order (alpha, mid, zulu) is the exact
@@ -95,6 +118,13 @@ BELLP='#[fg=#eceff4,bg=#bf616a,bold]'
 tm new-session -d -s zulu -n w1 -x 200 -y 50
 tm set-option -g @sidetabs-summary off
 tm set-option -g @sidetabs-flag-store "$STORE"
+# tmux's OWN default status-right is about 37 columns of content this plugin
+# does not own ("<pane title>" HH:MM dd-mmm-yy), and the cascade correctly
+# RESERVES those columns out of every budget. Left in place, every width
+# assertion in this file would depend on the hostname, the time of day and
+# today's date. It is emptied here so the budgets are arithmetic, and section 19
+# puts a known status-right back to test the reserve on purpose.
+tm set-option -g status-right ''
 tm run-shell "$PLUGIN_DIR/sidetabs.tmux"
 sleep 0.6
 tm new-session -d -s mid -n w1
@@ -130,10 +160,18 @@ got="$(pills zulu)"
 pass "one pill per session, in creation order, not the name order list-sessions returns"
 
 # status-left defaults to a 10-column cap, which would clip the strip after the
-# first pill. The generator sets the length to the strip's own visible width:
-# " zulu "6 + arrow, " mid "5 + arrow, " alpha "7 + arrow = 21.
-[ "$(sll zulu)" = "21" ] || fail "status-left-length is [$(sll zulu)], expected 21"
-pass "status-left-length is set to the strip's real visible width (21)"
+# first pill, so the generator sets it. It sets it to the columns the left side
+# may OCCUPY — the width budget, less the columns reserved for a side the plugin
+# does not own, less its own right chain — rather than to the width the strip
+# happens to have come out at. Here that is the whole assumed width: no client
+# is attached (200 = @sidetabs-strip-assumed-width), status-right is empty so
+# nothing is reserved, and no right pill is configured.
+#
+# Why not the visible width: tmux's cap is then the hard backstop that stops one
+# of OUR OWN #(shell) edge pills, whose rendered width can only be guessed,
+# from running over content somebody else put on the bar.
+[ "$(sll zulu)" = "200" ] || fail "status-left-length is [$(sll zulu)], expected 200"
+pass "status-left-length is the columns the left side may occupy (the full 200-column budget)"
 
 # === 3. each session's string highlights itself =============================
 has "${CUR} zulu " "$(sl zulu)"   || fail "zulu's own string does not highlight zulu: $(sl zulu)"
@@ -373,13 +411,31 @@ odd_id="$(tm list-sessions -F "#{session_id}${TAB}#{session_name}" \
 [ -n "$odd_id" ] || fail "setup: could not find the metacharacter session"
 has " a##b'c\$d " "$(sl zulu)" \
     || fail "a session name with tmux metacharacters was not escaped: $(sl zulu)"
-# The width must count the DISPLAYED name (## is one column on screen), not the
-# escape: 1 pad + 7 name + 1 pad + 1 arrow = 10.
-prev_len="$(sll zulu)"
+
+# The width must count the DISPLAYED name (7 columns: "##" is ONE "#" on
+# screen), not the 8-character escape. Squeezing the budget to exactly the
+# displayed width is what proves it: one column out either way changes which
+# cascade stage is chosen, and the marker is the tell.
+#
+#   zulu is coloured, so the marker is drawn      1
+#   " zulu "   + arrow                            7
+#   " middle " + arrow                            9
+#   " alpha "  + arrow                            8
+#   " a#b'c$d "+ arrow                           10   (7 displayed, not 8)
+#                                                --
+#                                                 35
+# At 35 everything fits and the marker stays. Counting the escape instead would
+# make it 36, so the cascade would drop the marker to get under the budget.
+stripw 35
+has "${MARKER} zulu " "$(sl zulu)" \
+    || fail "at a 35-column budget the escaped name was counted as escaped, not as displayed: $(pills zulu)"
+stripw 34
+if has "$MARKER" "$(sl zulu)"; then
+    fail "at 34 columns the strip did not degrade at all, so the width count is too small: $(pills zulu)"
+fi
+strip force
 tm kill-session -t "$odd_id"
 sleep 0.9
-[ "$(( prev_len - $(sll zulu) ))" = "10" ] \
-    || fail "the escaped name was width-counted as escaped, not as displayed"
 pass "a session name full of tmux metacharacters round-trips and is width-counted as displayed"
 
 # === 14. switching off leaves the last strip alone ==========================
@@ -545,5 +601,310 @@ pass "sysinfo.sh disk prints only the disk measurement"
 # never errors, even on garbage input — same promise the header comment makes.
 "$SYSINFO" bogus-argument >/dev/null || fail "sysinfo.sh exited non-zero on an unrecognized argument"
 pass "an unrecognized argument does not error"
+
+# === 18. the width cascade ==================================================
+# tmux truncates by HARD CUT at the client edge — no ellipsis, no marker, and a
+# 2-column glyph that does not fit is dropped whole — so a clipped strip is
+# indistinguishable from a short one. Every stage below is therefore asserted at
+# the exact budget that selects it, and at the budget one column above it, so a
+# stage that fired early or late is a failure rather than a coincidence.
+#
+# A clean world with names of known length, replacing the accumulated cast:
+#
+#   zulu (4)            current in the strings read below, and COLOURED
+#                       (slot 2, section 6) so the marker is drawn at stage 0
+#   longsessionname(15) ordinary — the one that has to give way
+#   mark (4)            COLOURED slot 3: informative, so stages 5 and 6 may
+#                       never touch it while an ordinary pill remains
+#   tmp (3)             ordinary
+#
+# The hooks are gone (section 15 uninstalled them), so every regenerate here is
+# an explicit forced run — which is what `stripw` does anyway.
+for s in middle alpha posthumous; do tm kill-session -t "$s" 2>/dev/null || true; done
+# Section 16 configured right pills and then unset them, leaving behind the
+# per-session status-right the plugin wrote while it still OWNED that side. It
+# no longer owns it, so from here on that leftover is (correctly) measured as
+# somebody else's content and reserved out of the budget — house rule, a side
+# the plugin stops owning is left alone, not cleared. Cleared here so the
+# budgets below are pure arithmetic; section 21 tests the reserve deliberately.
+tm list-sessions -F '#{session_name}' | while read -r s; do
+    tm set-option -t "$s" -u status-right 2>/dev/null || true
+done
+sleep 0.3
+tm new-session -d -s longsessionname -n w1
+tm new-session -d -s mark -n w1
+tm new-session -d -s tmp -n w1
+sleep 0.6
+tm run-shell "$PLUGIN_DIR/scripts/session_flag_set.sh $(appane mark) 3"
+sleep 0.4
+
+# Stage 0, the full strip:
+#   marker                                1
+#   " zulu "            + arrow           7
+#   " longsessionname " + arrow          18
+#   " mark "            + arrow           7
+#   " tmp "             + arrow           6
+#                                        --
+#                                        39
+FULL="${MARKER} zulu | longsessionname | mark | tmp |"
+BARE=" zulu | longsessionname | mark | tmp |"
+stripw 39
+[ "$(pills zulu)" = "$FULL" ] || fail "stage 0 at its exact budget (39) is not the full strip: [$(pills zulu)]"
+pass "stage 0: at exactly the width it needs, the strip shows everything"
+
+# stage 1 — the marker is the first thing sacrificed.
+stripw 38
+[ "$(pills zulu)" = "$BARE" ] \
+    || fail "stage 1 should drop only the marker at 38 columns: [$(pills zulu)]"
+pass "stage 1: one column short, the current-session marker goes first"
+
+# stages 2 and 3 — edge pills, OUTERMOST first, one per stage. Two a side, each
+# 2 characters wide, so each costs 1 pad + 2 + 1 pad + 1 arrow = 5:
+#   stage 0 with edges 39+20 = 59, stage 1 = 58, then 53, 48, 43, 38.
+tm set-option -g @sidetabs-strip-left-1 'ab'
+tm set-option -g @sidetabs-strip-left-2 'cd'
+tm set-option -g @sidetabs-strip-right-1 'ef'
+tm set-option -g @sidetabs-strip-right-2 'gh'
+rpills() { tm show-option -t "$1" -qv status-right | sed "s/#\[[^]]*\]//g; s/${ARROW}/|/g"; }
+
+stripw 59
+[ "$(pills zulu)" = " ab | cd |${FULL}" ] \
+    || fail "with edge pills, stage 0 at 59 is wrong: [$(pills zulu)]"
+[ "$(rpills zulu)" = " ef | gh |" ] || fail "both right pills should be present at 59: [$(rpills zulu)]"
+pass "stage 0 with edge pills: everything, both sides"
+
+stripw 53
+[ "$(rpills zulu)" = " ef |" ] \
+    || fail "stage 2 should drop the OUTERMOST (rightmost) right pill first: [$(rpills zulu)]"
+[ "$(pills zulu)" = " ab | cd |${BARE}" ] \
+    || fail "stage 2 must not touch the left side: [$(pills zulu)]"
+pass "stage 2: right pills go before any left pill, rightmost first"
+
+stripw 48
+[ "$(rpills zulu)" = "" ] || fail "the second right pill should be gone at 48: [$(rpills zulu)]"
+[ "$(pills zulu)" = " ab | cd |${BARE}" ] \
+    || fail "the left side must survive until every right pill is gone: [$(pills zulu)]"
+pass "stage 2: the whole right side is spent before the left side is touched"
+
+stripw 43
+[ "$(pills zulu)" = " cd |${BARE}" ] \
+    || fail "stage 3 should drop the OUTERMOST (leftmost) left pill first: [$(pills zulu)]"
+pass "stage 3: left pills go next, leftmost first"
+
+stripw 38
+[ "$(pills zulu)" = "$BARE" ] || fail "at 38 every edge pill should be gone: [$(pills zulu)]"
+pass "stage 3: the last left pill goes before a session name is shortened"
+
+for o in left-1 left-2 right-1 right-2; do tm set-option -gu "@sidetabs-strip-${o}"; done
+
+# stage 4 — name truncation, 12 then 8 then 6 then 4. Only longsessionname is
+# long enough to be affected; the arithmetic is 7 + (cap+3) + 7 + 6.
+stripw 35
+[ "$(pills zulu)" = " zulu | longsessionn | mark | tmp |" ] \
+    || fail "stage 4 should truncate names to 12 at 35 columns: [$(pills zulu)]"
+stripw 31
+[ "$(pills zulu)" = " zulu | longsess | mark | tmp |" ] \
+    || fail "stage 4 should truncate names to 8 at 31 columns: [$(pills zulu)]"
+stripw 29
+[ "$(pills zulu)" = " zulu | longse | mark | tmp |" ] \
+    || fail "stage 4 should truncate names to 6 at 29 columns: [$(pills zulu)]"
+stripw 27
+[ "$(pills zulu)" = " zulu | long | mark | tmp |" ] \
+    || fail "stage 4 should truncate names to 4 at 27 columns: [$(pills zulu)]"
+pass "stage 4: names truncate 12 -> 8 -> 6 -> 4, one step per column budget"
+
+# stage 5 — ordinary non-current sessions become a single initial. zulu is the
+# viewer and mark is coloured, so both keep their (already truncated) names.
+stripw 22
+[ "$(pills zulu)" = " zulu | l | mark | t |" ] \
+    || fail "stage 5 should reduce ordinary sessions to an initial at 22: [$(pills zulu)]"
+pass "stage 5: ordinary sessions drop to a single initial; the current and the coloured keep their names"
+
+# stage 6 — and then to a bare block of their own colour, still one pill per
+# session, so the strip still says how many sessions there are.
+stripw 18
+[ "$(pills zulu)" = " zulu | | mark | |" ] \
+    || fail "stage 6 should blank ordinary sessions to a colour block at 18: [$(pills zulu)]"
+# The block really is the pill colour with no text in it, not an empty string.
+has "${IDLE} #[" "$(sl zulu)" \
+    || fail "a blanked pill is not a coloured block: $(sl zulu)"
+pass "stage 6: ordinary sessions become a bare block of their colour"
+
+# === 19. stages 5 and 6 never degrade an informative pill ===================
+# "mark" is coloured through both stages above while its ordinary neighbours are
+# spent first — that is the rule for a colour you set on purpose. The same has
+# to hold for a pill that is asking for you: agent attention (and a bell, which
+# takes the identical branch in resolve_pills and is exercised in section 8).
+has "${BLUEP} mark " "$(sl zulu)" \
+    || fail "the coloured pill lost its text while an ordinary one was still on screen: $(sl zulu)"
+pass "a coloured pill keeps its full name at the stage that blanks ordinary ones"
+
+p_tmp="$(appane tmp)"
+tm run-shell "$PLUGIN_DIR/scripts/agent_status.sh attention $p_tmp"
+sleep 0.4
+[ "$(tm show-option -w -t tmp:w1 -qv @sidetabs_agent)" = "attention" ] \
+    || fail "setup: agent_status.sh did not raise attention on tmp's window"
+# tmp is now informative too, so only longsessionname may be degraded:
+#   stage 5:  7 + 4 (l) + 7 + 6 = 24     stage 6:  7 + 2 + 7 + 6 = 22
+stripw 24
+[ "$(pills zulu)" = " zulu | l | mark | tmp |" ] \
+    || fail "attention did not protect tmp from stage 5: [$(pills zulu)]"
+stripw 22
+[ "$(pills zulu)" = " zulu | | mark | tmp |" ] \
+    || fail "attention did not protect tmp from stage 6: [$(pills zulu)]"
+has "${BELLP} tmp " "$(sl zulu)" \
+    || fail "the attention pill is not drawn in the bell colours: $(sl zulu)"
+pass "a pill holding agent attention keeps its name while ordinary pills are spent first"
+tm run-shell "$PLUGIN_DIR/scripts/agent_status.sh clear $p_tmp"
+sleep 0.4
+
+# === 20. the floor =========================================================
+# Below stage 6 there is one pill left: which session you are in, and how many
+# you cannot see. "▎ zulu +3 " is 1+1+4+3+1 = 10 columns plus its arrow.
+stripw 11
+[ "$(pills zulu)" = "${MARKER} zulu +3 |" ] \
+    || fail "the floor should be the current session plus a count at 11 columns: [$(pills zulu)]"
+n_arrows="$(sl zulu | grep -o "$ARROW" | grep -c . || true)"
+[ "$n_arrows" = "1" ] || fail "the floor should be exactly one pill, found $n_arrows arrows"
+pass "the floor names the session you are in and counts the ones it could not show"
+
+# The marker at the floor overrides the normal rule that it is drawn only on a
+# COLOURED current session: longsessionname has no colour of its own, and at
+# this width the marker is the only thing saying that pill is where you are
+# rather than the only session that fitted. Its name gives way to keep the
+# count, which is the part you cannot infer from anything else on screen.
+[ "$(pills longsessionname)" = "${MARKER} long +3 |" ] \
+    || fail "an uncoloured session's floor is wrong: [$(pills longsessionname)]"
+pass "at the floor the marker is always drawn, even for a session with no colour of its own"
+
+# One session and nothing else: "+0" would be information-shaped noise.
+tm new-session -d -s solo -n w1
+sleep 0.3
+for s in zulu longsessionname mark tmp; do tm kill-session -t "$s"; done
+sleep 0.3
+stripw 4
+[ "$(pills solo)" = "${MARKER} s |" ] \
+    || fail "a single-session floor should carry no count: [$(pills solo)]"
+pass "with nothing hidden the floor carries no count, and the name gives way to the width"
+
+# === 21. an unowned side is measured and reserved, never overrun ============
+# status-left always belongs to the plugin; status-right belongs to it only when
+# @sidetabs-strip-right-1 is set. Otherwise it is the user's (or another
+# plugin's, or tmux's own default), so its width comes out of the budget and its
+# content is never touched — an unowned side has no stage in the cascade.
+tm new-session -d -s aa -n w1
+tm new-session -d -s bb -n w1
+sleep 0.5
+# " solo " + arrow 7, " aa " + arrow 5, " bb " + arrow 5 = 17; solo is current
+# and uncoloured, so there is no marker to drop.
+BASE=" solo | aa | bb |"
+stripw 17
+[ "$(pills solo)" = "$BASE" ] || fail "setup: unexpected baseline strip: [$(pills solo)]"
+
+tm set-option -g status-right '0123456789'
+stripw 27
+[ "$(pills solo)" = "$BASE" ] \
+    || fail "10 reserved columns should shift the same strip from 17 to 27: [$(pills solo)]"
+stripw 26
+[ "$(pills solo)" != "$BASE" ] \
+    || fail "the reserved columns were not subtracted from the budget at all: [$(pills solo)]"
+pass "an unowned status-right is measured and its columns come out of the budget"
+
+# Style sequences cost no columns on screen, so they must cost none here either.
+tm set-option -g status-right '#[fg=red,bg=blue]0123456789#[default]'
+stripw 27
+[ "$(pills solo)" = "$BASE" ] \
+    || fail "#[...] style runs were counted as width in the unowned side: [$(pills solo)]"
+pass "style escapes in an unowned side are not counted as width"
+
+# A #(shell) job cannot be measured: tmux schedules it asynchronously, and the
+# expansion does not even leave a "#(" behind to notice — an option holding
+# "#(echo hi) %H:%M" expands to " 11:36". So the job is detected on the RAW
+# value, and @sidetabs-strip-reserve covers what could not be measured.
+# "#(true)" prints nothing, so the assertion cannot flake on whether tmux has
+# cached the job's output by the time the strip is regenerated.
+tm set-option -g status-right '#(true)'
+stripw 29
+[ "$(pills solo)" = "$BASE" ] \
+    || fail "the auto reserve for an unmeasurable #(job) is not 12 columns: [$(pills solo)]"
+stripw 28
+[ "$(pills solo)" != "$BASE" ] \
+    || fail "an unmeasurable #(job) reserved nothing at all: [$(pills solo)]"
+pass "a side whose width cannot be measured falls back to the configured reserve (auto = 12 per job)"
+
+tm set-option -g @sidetabs-strip-reserve 30
+stripw 47
+[ "$(pills solo)" = "$BASE" ] \
+    || fail "an explicit @sidetabs-strip-reserve was not honoured: [$(pills solo)]"
+stripw 46
+[ "$(pills solo)" != "$BASE" ] || fail "an explicit reserve was ignored: [$(pills solo)]"
+tm set-option -gu @sidetabs-strip-reserve
+pass "@sidetabs-strip-reserve overrides the estimate for a side carrying a shell job"
+
+# ...and through all of that the unowned side itself was never written, not even
+# at a width where the plugin had to fall back to its own floor.
+stripw 6
+[ "$(tm show-option -t solo -qv status-right)" = "" ] \
+    || fail "the plugin wrote a status-right it does not own: [$(tm show-option -t solo -qv status-right)]"
+[ "$(tm show-option -gv status-right)" = '#(true)' ] \
+    || fail "the plugin modified the global status-right it does not own"
+has "$MARKER" "$(sl solo)" || fail "the strip did not fall back to its floor at 6 columns: [$(pills solo)]"
+pass "an unowned side is reserved and never dropped, written or cleared — even at the floor"
+tm set-option -g status-right ''
+
+# === 22. a session with no attached client =================================
+# Nothing is attached to this scratch server at all, so every strip in this file
+# has been generated for a client-less session. What the budget is in that case
+# is @sidetabs-strip-assumed-width, asserted here without the test override —
+# which also proves the override is not the only path into the cascade.
+# " solo " + arrow is 7, and two blocks are 2 each, so stage 6 needs 11: at 10
+# even that is too wide and the floor is all that is left, with the NAME giving
+# way to keep the count.
+tm set-option -g @sidetabs-strip-assumed-width 10
+strip force
+[ "$(pills solo)" = "${MARKER} sol +2 |" ] \
+    || fail "the assumed width did not drive the cascade: [$(pills solo)]"
+tm set-option -g @sidetabs-strip-assumed-width 200
+strip force
+[ "$(pills solo)" = "$BASE" ] \
+    || fail "a client-less session did not get a full-width strip at the default assumed width: [$(pills solo)]"
+[ "$(sll solo)" = "200" ] || fail "status-left-length should be the assumed budget, got [$(sll solo)]"
+pass "a session with no attached client is budgeted at @sidetabs-strip-assumed-width and still gets a usable strip"
+
+# === 23. @sidetabs-strip-name-max ==========================================
+# A hard cap applied at stage 0, INDEPENDENTLY of the cascade: it holds at any
+# width, including one where nothing would have been truncated at all.
+tm set-option -g @sidetabs-strip-name-max 2
+stripw 200
+[ "$(pills solo)" = " so | aa | bb |" ] \
+    || fail "@sidetabs-strip-name-max did not cap names at a width with room to spare: [$(pills solo)]"
+[ "$(sll solo)" = "200" ] || fail "the cap should not change the length budget, got [$(sll solo)]"
+pass "@sidetabs-strip-name-max caps names at stage 0, independently of the cascade"
+
+# ...and the cascade still runs underneath it: at 11 columns the cap is not
+# enough on its own (2+3 + 2+3 + 2+3 = 15), so ordinary pills go to initials
+# (5 + 4 + 4 = 13), then to blocks (5 + 2 + 2 = 9).
+stripw 13
+[ "$(pills solo)" = " so | a | b |" ] \
+    || fail "the cascade did not continue below the name cap: [$(pills solo)]"
+stripw 9
+[ "$(pills solo)" = " so | | |" ] \
+    || fail "the cascade did not reach the block stage below the name cap: [$(pills solo)]"
+tm set-option -gu @sidetabs-strip-name-max
+pass "the cascade keeps shedding detail below a configured name cap"
+
+# === 24. the cascade never leaves an empty strip ===========================
+# House rule: a run that cannot proceed is a no-op, never a clear. A budget of
+# zero is not a reason to blank the bar — it is a reason to draw the floor and
+# let tmux clip, because a strip that says the wrong thing is still better than
+# one that says nothing about where you are.
+last="$(sl solo)"
+stripw 1
+[ -n "$(sl solo)" ] || fail "a 1-column budget cleared the strip"
+has "$MARKER" "$(sl solo)" || fail "a 1-column budget did not fall back to the floor: [$(pills solo)]"
+[ "$(sll solo)" -ge 1 ] || fail "status-left-length went to zero or below: [$(sll solo)]"
+pass "even an impossible budget draws the floor rather than clearing the strip"
+strip force
+[ -n "$(sl solo)" ] || fail "the strip did not come back after the forced-width runs"
 
 echo "ALL STRIP SMOKE TESTS PASSED"

@@ -194,8 +194,12 @@ Scanned `1..16`, stopping at the first gap. `@sidetabs-strip-right-N` is identic
 A side with no `-1` set is **never written by the plugin** (D11), but it is still
 **measured and reserved** so the strip cannot overrun content the user owns. The
 measurement expands that side with `#{T:...}`, strips `#[...]` sequences, and counts
-the remainder; if the expansion still contains `#(`, the width of a shell command is
-unknowable and the plugin falls back to `@sidetabs-strip-reserve`. An unowned side
+the remainder. The `#(` test must run on the **raw** value, not the expansion:
+verified on 3.6b, `#(echo hi) %H:%M` expands to ` 11:36` — the job leaves no `#(`
+behind, so testing the expansion would never fire. A shell command's width is
+unknowable synchronously (jobs are scheduled asynchronously), so each one adds a
+fixed estimate, and a numeric `@sidetabs-strip-reserve` replaces the estimate
+entirely. An unowned side
 is reserved but never dropped, so its stage in the cascade is skipped.
 
 `sysinfo.sh` grows an optional argument (`load` | `mem` | `disk`, default: all three
