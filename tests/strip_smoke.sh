@@ -27,6 +27,10 @@
 #  13  a session name full of tmux metacharacters round-trips intact
 #  14  switching the strip off leaves the last strip alone (no clear)
 #  15  uninstall stops the regeneration
+#  16  edge pills: numbered options, individually coloured, joined the same
+#      way session pills are; an unconfigured side is never written; no edge
+#      pills configured is byte-identical to the session-only strip
+#  17  sysinfo.sh: one measurement at a time, and the bare call is unchanged
 #
 # -f /dev/null is on EVERY tmux call, not just the first: without it a new
 # server on this socket auto-loads the user's ~/.tmux.conf, which run-shells
@@ -401,5 +405,145 @@ sleep 0.9
 [ "$(sl zulu)" = "$before" ] \
     || fail "a session created after uninstall still regenerated the strip — a hook is orphaned"
 pass "uninstall tears down the strip hooks, so nothing regenerates afterwards"
+
+# === 16. edge pills ==========================================================
+# Content pinned outside the session pills as its own individually coloured
+# pill(s). Numbered options (@sidetabs-strip-left-1, -2, ...), not a
+# delimited list — chosen deliberately so a pill whose VALUE is itself
+# "#(foo | bar)" cannot break the parse; there is nothing here to prove that
+# would fail differently, so this section proves the actual contract instead:
+# join rule, per-pill colour, an unconfigured side never written, and the
+# session-only baseline is exactly unaffected when no edge pill is set.
+# A fresh forced run first, so the baseline reflects the CURRENT session set
+# (uninstall in section 15 orphaned the hooks, so "posthumous" from that
+# section never triggered an auto-regenerate — the strip on screen right now
+# is stale until something forces one, same as section 15 itself proved).
+strip force
+baseline="$(sl zulu)"
+[ -z "$(tm show-option -t zulu -qv status-right)" ] \
+    || fail "setup: status-right is already set before any right pill is configured"
+
+# no -1 on either side: byte-identical to the session-only strip, and
+# status-right does not exist as a session-scoped option at all.
+strip force
+[ "$(sl zulu)" = "$baseline" ] \
+    || fail "an unconfigured edge changed the strip: [$(sl zulu)] vs baseline [$baseline]"
+[ -z "$(tm show-option -t zulu -qv status-right)" ] \
+    || fail "status-right was written even though no right pill is configured"
+pass "with no edge pills configured, the strip is byte-identical to the session-only output"
+
+# one left pill, two right pills (the second left with no colour set, to
+# exercise the idle-theme fallback), each individually coloured.
+tm set-option -g @sidetabs-strip-left-1 'cpu'
+tm set-option -g @sidetabs-strip-left-1-bg 'cyan'
+tm set-option -g @sidetabs-strip-left-1-fg 'black'
+tm set-option -g @sidetabs-strip-right-1 'clock'
+tm set-option -g @sidetabs-strip-right-1-bg 'yellow'
+tm set-option -g @sidetabs-strip-right-1-fg 'black'
+tm set-option -g @sidetabs-strip-right-2 'battery'
+strip force
+
+got="$(pills zulu)"
+case "$got" in
+    " cpu |"*) ;;
+    *) fail "a configured left pill did not land before the session pills: [$got]" ;;
+esac
+has "#[fg=black,bg=cyan,nobold] cpu " "$(sl zulu)" \
+    || fail "the left pill was not coloured as configured: $(sl zulu)"
+pass "a configured left pill lands before the session pills, in its configured colour"
+
+# the left pill's own trailing arrow joins it to the FIRST session pill using
+# the exact same rule session-to-session joins use (section 5). By this point
+# in the file zulu is coloured green ($GREEN, set in section 6) rather than
+# plain "current" — backgrounds differ (cyan -> zulu's #a3be8c), so fg = the
+# left pill's own bg, exactly like any other differing-background join.
+has "#[fg=cyan,bg=#a3be8c,nobold]${ARROW}" "$(sl zulu)" \
+    || fail "the left pill's join into the session strip did not follow the standard rule: $(sl zulu)"
+pass "an edge pill joins the session strip using the same separator rule session pills use"
+
+# status-right holds ONLY the right pills — no session content at all — and
+# follows the identical join rule between its own pills and into the bar
+# background; the second pill's colour was left unset, so it must fall back
+# to the idle theme rather than being left blank or erroring.
+rgt="$(tm show-option -t zulu -qv status-right)"
+[ -n "$rgt" ] || fail "status-right was not written once a right pill is configured"
+if has 'zulu' "$rgt"; then fail "status-right leaked session-pill content: $rgt"; fi
+has "#[fg=black,bg=yellow,nobold] clock " "$rgt" \
+    || fail "the first right pill was not coloured as configured: $rgt"
+has "#[fg=white,bg=brightblack,nobold] battery " "$rgt" \
+    || fail "an uncoloured right pill did not fall back to the idle theme colour: $rgt"
+has "#[fg=yellow,bg=brightblack,nobold]${ARROW}" "$rgt" \
+    || fail "the join between two right pills did not follow the standard rule: $rgt"
+has "#[fg=brightblack,bg=black,nobold]${ARROW}" "$rgt" \
+    || fail "the last right pill did not arrow into the bar background: $rgt"
+pass "right pills form their own status-right, individually coloured, joined the same way"
+
+# status-right carries no "current" concept, but the OPTION is per-session
+# (fact 3, same as status-left), so every session still needs its own copy —
+# checked against a session other than the one every other assertion here
+# reads from.
+[ -n "$(tm show-option -t middle -qv status-right)" ] \
+    || fail "status-right was only written for one session; it is itself a per-session option"
+[ "$(tm show-option -t middle -qv status-right)" = "$rgt" ] \
+    || fail "status-right differs between sessions, but right pills have no per-session content"
+pass "status-right is written identically for every session, since it is itself per-session"
+
+# clearing every left pill returns status-left to the byte-identical
+# session-only baseline; status-right is left exactly as last generated —
+# house rule: a no-longer-configured side is a no-op, never a clear.
+tm set-option -gu @sidetabs-strip-left-1
+tm set-option -gu @sidetabs-strip-left-1-bg
+tm set-option -gu @sidetabs-strip-left-1-fg
+strip force
+[ "$(sl zulu)" = "$baseline" ] \
+    || fail "clearing the left pill did not restore the byte-identical session-only strip"
+[ "$(tm show-option -t zulu -qv status-right)" = "$rgt" ] \
+    || fail "clearing the left pill unexpectedly touched status-right"
+pass "clearing every left pill restores the session-only strip exactly; status-right is untouched"
+
+tm set-option -gu @sidetabs-strip-right-1
+tm set-option -gu @sidetabs-strip-right-2
+tm set-option -gu @sidetabs-strip-right-1-bg
+tm set-option -gu @sidetabs-strip-right-1-fg
+pass "edge-pill options cleared"
+
+# === 17. sysinfo.sh: one measurement at a time ===============================
+SYSINFO="$PLUGIN_DIR/scripts/sysinfo.sh"
+ICON_LOAD="$(printf '\xef\x83\xa4')"   # U+F0E4
+ICON_MEM="$(printf '\xef\x8b\x9b')"    # U+F2DB
+ICON_DISK="$(printf '\xef\x82\xa0')"   # U+F0A0
+THINBAR="$(printf '\xee\x82\xb1')"     # U+E0B1, sysinfo.sh's OWN internal separator
+
+all_out="$("$SYSINFO")"
+has "$ICON_LOAD" "$all_out" || fail "sysinfo.sh (no arg) is missing the load icon: $all_out"
+has "$ICON_MEM"  "$all_out" || fail "sysinfo.sh (no arg) is missing the mem icon: $all_out"
+has "$ICON_DISK" "$all_out" || fail "sysinfo.sh (no arg) is missing the disk icon: $all_out"
+sepcount="$(printf '%s' "$all_out" | grep -o "$THINBAR" | grep -c . || true)"
+[ "$sepcount" = "2" ] \
+    || fail "sysinfo.sh (no arg) should join its 3 measurements with 2 separators, got $sepcount: $all_out"
+pass "sysinfo.sh with no argument still prints all three measurements, exactly as before"
+
+load_out="$("$SYSINFO" load)"
+has "$ICON_LOAD" "$load_out" || fail "sysinfo.sh load is missing the load icon: $load_out"
+if has "$ICON_MEM"  "$load_out"; then fail "sysinfo.sh load leaked the mem icon: $load_out"; fi
+if has "$ICON_DISK" "$load_out"; then fail "sysinfo.sh load leaked the disk icon: $load_out"; fi
+if has "$THINBAR"   "$load_out"; then fail "sysinfo.sh load emitted the combined form's separator: $load_out"; fi
+pass "sysinfo.sh load prints only the load measurement, unjoined"
+
+mem_out="$("$SYSINFO" mem)"
+has "$ICON_MEM" "$mem_out" || fail "sysinfo.sh mem is missing the mem icon: $mem_out"
+if has "$ICON_LOAD" "$mem_out"; then fail "sysinfo.sh mem leaked the load icon: $mem_out"; fi
+if has "$ICON_DISK" "$mem_out"; then fail "sysinfo.sh mem leaked the disk icon: $mem_out"; fi
+pass "sysinfo.sh mem prints only the memory measurement"
+
+disk_out="$("$SYSINFO" disk)"
+has "$ICON_DISK" "$disk_out" || fail "sysinfo.sh disk is missing the disk icon: $disk_out"
+if has "$ICON_LOAD" "$disk_out"; then fail "sysinfo.sh disk leaked the load icon: $disk_out"; fi
+if has "$ICON_MEM"  "$disk_out"; then fail "sysinfo.sh disk leaked the mem icon: $disk_out"; fi
+pass "sysinfo.sh disk prints only the disk measurement"
+
+# never errors, even on garbage input — same promise the header comment makes.
+"$SYSINFO" bogus-argument >/dev/null || fail "sysinfo.sh exited non-zero on an unrecognized argument"
+pass "an unrecognized argument does not error"
 
 echo "ALL STRIP SMOKE TESTS PASSED"

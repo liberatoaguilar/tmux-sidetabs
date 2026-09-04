@@ -122,6 +122,85 @@ palette="$(get_tmux_option '@sidetabs-flag-colors' "$DEFAULT_FLAG_COLORS" \
 PALETTE=($palette)
 NPAL="${#PALETTE[@]}"
 
+# --- 3b. edge pills ------------------------------------------------------
+# Content pinned to either side of the strip — system load, memory, disk, a
+# clock, anything else — each its own individually coloured pill.
+#
+# NUMBERED options (@sidetabs-strip-left-1, -2, ...), not a delimited list. A
+# pill's VALUE is free-form tmux FORMAT syntax — typically a #(shell command),
+# sometimes a #{...} or a strftime %-spec — and any of those can legitimately
+# contain "|" or other characters a delimiter would have to escape around. A
+# numbered option needs no escaping at all: "#(foo | bar)" simply cannot break
+# the parse, because there is no delimiter for it to be confused with.
+#
+# Scanned 1..16 (a sane upper bound), stopping at the first gap. A side whose
+# -1 is unset comes out of this with N=0, and section 7b/8 below skip writing
+# that side's tmux option AT ALL — not even an unset — matching this file's
+# house rule that an unconfigured path is a no-op, never a clear.
+scan_side() {
+    local prefix="$1" i=1 val bg fg
+    N=0; VALS=(); BGS=(); FGS=()
+    while [ "$i" -le 16 ]; do
+        val="$(get_tmux_option "@sidetabs-strip-${prefix}-${i}" "")"
+        [ -n "$val" ] || break
+        # Per-pill colour, falling back to the same idle theme an unflagged
+        # session pill already uses — a "sensible default" that also means an
+        # uncoloured edge pill blends in rather than clashing with the strip.
+        bg="$(get_tmux_option "@sidetabs-strip-${prefix}-${i}-bg" "$IDLE_BG")"
+        fg="$(get_tmux_option "@sidetabs-strip-${prefix}-${i}-fg" "$IDLE_FG")"
+        N=$((N + 1))
+        VALS[$N]="$val"
+        # Lowercased for the same reason the theme block is (fact 7): #D08770
+        # corrupts under a second format expansion, #d08770 does not.
+        BGS[$N]="$(printf '%s' "$bg" | tr '[:upper:]' '[:lower:]')"
+        FGS[$N]="$(printf '%s' "$fg" | tr '[:upper:]' '[:lower:]')"
+        i=$((i + 1))
+    done
+}
+# scan_side fills the globals N/VALS/BGS/FGS; copied out by hand (not
+# `arr=("${VALS[@]}")`, which would silently re-index from 0) so LEFT_*/
+# RIGHT_* keep the same 1-based indexing every array in this file uses.
+scan_side left
+LEFT_N="$N"; LEFT_VAL=(); LEFT_BG=(); LEFT_FG=()
+i=1
+while [ "$i" -le "$LEFT_N" ]; do
+    LEFT_VAL[$i]="${VALS[$i]}"; LEFT_BG[$i]="${BGS[$i]}"; LEFT_FG[$i]="${FGS[$i]}"
+    i=$((i + 1))
+done
+scan_side right
+RIGHT_N="$N"; RIGHT_VAL=(); RIGHT_BG=(); RIGHT_FG=()
+i=1
+while [ "$i" -le "$RIGHT_N" ]; do
+    RIGHT_VAL[$i]="${VALS[$i]}"; RIGHT_BG[$i]="${BGS[$i]}"; RIGHT_FG[$i]="${FGS[$i]}"
+    i=$((i + 1))
+done
+
+# A pill's rendered width cannot be known in bash when its value is a tmux
+# FORMAT rather than literal text. Verified against a scratch server: a
+# #(shell) job is scheduled ASYNCHRONOUSLY, and `display-message -p
+# '#{T:@opt}'` on an option holding one answers empty even after the job has
+# had time to finish, because a one-off display-message is not the
+# status-line context tmux schedules the job's redraw against — there is no
+# synchronous way to ask tmux "how wide will this render". #{...} references
+# and strftime %-specs are lumped in with the same fallback rather than
+# threading a second tmux round-trip through a temp option just for those.
+#
+# So: a literal pill (no specials) is measured exactly, off its raw character
+# count — same convention a session name uses. Anything with a special gets a
+# fixed, generous placeholder instead, sized so status-left/-right-length
+# stays big enough not to clip a pill that renders longer than this guess.
+# This is deliberately NOT the precise "measure and reserve" machinery the
+# design doc describes for an UNOWNED side (@sidetabs-strip-reserve) — that
+# reservation is ticket 07's shrink-cascade job; this only has to keep OUR OWN
+# pills from being cut off by tmux's length cap.
+DYNAMIC_PILL_WIDTH=12
+pill_display_width() {
+    case "$1" in
+        *'#('*|*'#{'*|*%[A-Za-z]*) printf '%s' "$DYNAMIC_PILL_WIDTH" ;;
+        *) printf '%s' "${#1}" ;;
+    esac
+}
+
 # --- 4. enumerate sessions in creation order ---------------------------------
 # STABLE CREATION ORDER, which is session_id order — `list-sessions` sorts by
 # NAME, so a rename would reshuffle the whole strip under the user. The id is
@@ -273,9 +352,76 @@ BATCH=""
 # single-quoted string: close, backslash-escaped quote, reopen.
 SQ="'"
 SQ_ESCAPED="'\\''"
+
+# append_pill <bg> <fg> <attr> <body> <bodywidth> <next_bg>
+# Appends one "#[style]body" cell plus its trailing separator arrow to the
+# CALLER's $out, and adds <bodywidth> + 1 (the arrow) to the CALLER's $width.
+# Deliberately not `local out`/`local width` itself: by bash's ordinary
+# dynamic scoping this reads and writes whichever $out/$width are in scope at
+# the call site, so ONE copy of the separator rule serves the left-pill
+# chain, the session-pill chain and the right-pill chain below, instead of
+# three. <next_bg> is the neighbour to the right — the pill that follows this
+# one, or the bar background / next chain's first pill for whatever sits at
+# the end of that particular chain.
+append_pill() {
+    local bg="$1" fg="$2" attr="$3" body="$4" bw="$5" nbg="$6" sfg
+    out="${out}#[fg=${fg},bg=${bg},${attr}]${body}"
+    width=$((width + bw))
+    if [ "$bg" = "$nbg" ]; then sfg="$SEP_FG"; else sfg="$bg"; fi
+    out="${out}#[fg=${sfg},bg=${nbg},nobold]${ARROW}"
+    width=$((width + 1))
+}
+
+# --- 7b. the right pill chain, built ONCE ------------------------------------
+# Edge pills carry no "current" concept, so — unlike the session chain — this
+# side's content and colours are IDENTICAL for every session's string; only
+# the TARGET of the set-option differs, because status-right is a per-session
+# option exactly like status-left (fact 3), so every session still needs its
+# own copy set or clients on that session would see none. Built once here and
+# reused (already single-quote-escaped) inside build_one below, rather than
+# repeating the same string work once per session.
+RIGHT_OUT=""; RIGHT_Q=""; RIGHT_WIDTH=0
+if [ "$RIGHT_N" -gt 0 ]; then
+    out=""; width=0
+    k=1
+    while [ "$k" -le "$RIGHT_N" ]; do
+        esc="${RIGHT_VAL[$k]}"
+        body=" ${esc} "
+        if [ "$k" -lt "$RIGHT_N" ]; then rnbg="${RIGHT_BG[$((k + 1))]}"; else rnbg="$STRIP_BG"; fi
+        append_pill "${RIGHT_BG[$k]}" "${RIGHT_FG[$k]}" "nobold" "$body" \
+            "$(($(pill_display_width "$esc") + 2))" "$rnbg"
+        k=$((k + 1))
+    done
+    RIGHT_OUT="$out"
+    RIGHT_WIDTH="$width"
+    RIGHT_Q="${RIGHT_OUT//$SQ/$SQ_ESCAPED}"
+fi
+
 build_one() {
-    local v="$1" k out="" bg fg attr body rbg sfg width=0 name esc
+    local v="$1" k out="" width=0 bg fg attr body name esc nbg width_add
     resolve_pills "$v"
+
+    # Left edge pills, outermost (1) first, prepended directly into the SAME
+    # status-left string as the session pills — this is the "join" the design
+    # doc means: the last left pill's separator arrow is computed against the
+    # FIRST session pill's background exactly as if it were just another
+    # neighbour, because that is exactly what it is. A live server always has
+    # at least one session (guarded above), so PBG[1] always exists.
+    #
+    # A pill's VALUE is NOT escaped the way a session name is: a session name
+    # is literal text a stray "#" would corrupt, but a pill's value IS tmux
+    # format syntax on purpose (typically a #(shell command)) and must reach
+    # the option unmangled for tmux to expand it at render time.
+    k=1
+    while [ "$k" -le "$LEFT_N" ]; do
+        esc="${LEFT_VAL[$k]}"
+        body=" ${esc} "
+        if [ "$k" -lt "$LEFT_N" ]; then nbg="${LEFT_BG[$((k + 1))]}"; else nbg="${PBG[1]}"; fi
+        append_pill "${LEFT_BG[$k]}" "${LEFT_FG[$k]}" "nobold" "$body" \
+            "$(($(pill_display_width "$esc") + 2))" "$nbg"
+        k=$((k + 1))
+    done
+
     k=1
     while [ "$k" -le "$n" ]; do
         bg="${PBG[$k]}"; fg="${PFG[$k]}"; attr="${PATTR[$k]}"
@@ -288,18 +434,13 @@ build_one() {
         # Width is counted in CHARACTERS off the RAW name — "##" is one column
         # on screen, and style escapes do not count toward status-left-length at
         # all. Same convention render.sh uses for the sidebar.
-        width=$((width + ${#name} + 2))
+        width_add=$((${#name} + 2))
         if [ "$k" = "$v" ] && [ "$MARK" = "1" ]; then
             body="${MARKER}${body}"
-            width=$((width + 1))
+            width_add=$((width_add + 1))
         fi
-        out="${out}#[fg=${fg},bg=${bg},${attr}]${body}"
-
-        if [ "$k" -lt "$n" ]; then rbg="${PBG[$((k + 1))]}"; else rbg="$STRIP_BG"; fi
-        if [ "$bg" = "$rbg" ]; then sfg="$SEP_FG"; else sfg="$bg"; fi
-        out="${out}#[fg=${sfg},bg=${rbg},nobold]${ARROW}"
-        width=$((width + 1))
-
+        if [ "$k" -lt "$n" ]; then nbg="${PBG[$((k + 1))]}"; else nbg="$STRIP_BG"; fi
+        append_pill "$bg" "$fg" "$attr" "$body" "$width_add" "$nbg"
         k=$((k + 1))
     done
     [ -n "$out" ] || return 1
@@ -323,6 +464,17 @@ build_one() {
     BATCH="${BATCH}set-option -t '\$${SIDS[$v]}' status-left '${q}'
 set-option -t '\$${SIDS[$v]}' status-left-length ${width}
 "
+    # status-right is written ONLY when at least one right pill is configured
+    # (RIGHT_N > 0) — a side whose -1 is unset is NEVER touched by this
+    # plugin, not even to clear it, so a status-right the USER owns (or that a
+    # different plugin owns) is left exactly alone. This is the same house
+    # rule section 14 of the smoke test exercises for the strip's own master
+    # switch: an unconfigured/off path is a no-op, never a clear.
+    if [ "$RIGHT_N" -gt 0 ]; then
+        BATCH="${BATCH}set-option -t '\$${SIDS[$v]}' status-right '${RIGHT_Q}'
+set-option -t '\$${SIDS[$v]}' status-right-length ${RIGHT_WIDTH}
+"
+    fi
     return 0
 }
 
