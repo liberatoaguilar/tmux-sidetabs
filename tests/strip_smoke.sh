@@ -439,9 +439,10 @@ sleep 0.9
 pass "a session name full of tmux metacharacters round-trips and is width-counted as displayed"
 
 # === 14. switching off leaves the last strip alone ==========================
-# House rule: a run that cannot proceed is a NO-OP, never a clear. Uninstall and
-# the master switch both leave status-left as last generated — a conf reload is
-# what restores the user's own, because that is where it comes from.
+# House rule: a run that cannot proceed is a NO-OP, never a clear. Switching the
+# master switch off is exactly that — the strip stays as last generated. It is
+# NOT the same thing as uninstalling, which does clear it, deliberately and per
+# session (section 15).
 last="$(sl zulu)"
 [ -n "$last" ] || fail "setup: expected a strip before switching off"
 tm set-option -g @sidetabs-session-strip off
@@ -452,15 +453,25 @@ pass "switching the strip off leaves the installed strip alone rather than clear
 tm set-option -g @sidetabs-session-strip on
 strip force
 
-# === 15. uninstall stops the regeneration ===================================
-before="$(sl zulu)"
+# === 15. uninstall hands the status line back and stops regenerating =========
+# Two things at once, and the second is only observable because of the first:
+# uninstall UNSETS status-left per session (it is a per-session option, so a
+# global one the user's conf sets is shadowed until it is unset — see
+# tests/uninstall_hooks_smoke.sh §3, which owns that assertion), and it tears
+# down the hooks, so nothing writes one back afterwards. If a hook were
+# orphaned, the session created below would regenerate the strip and status-left
+# would be non-empty again — a louder signal than the old before/after compare,
+# which could not tell "nothing happened" from "the same thing happened twice".
+[ -n "$(sl zulu)" ] || fail "setup: expected a strip before uninstalling"
 tm run-shell "$PLUGIN_DIR/scripts/uninstall.sh"
 sleep 0.6
+[ -z "$(sl zulu)" ] || fail "uninstall left a per-session status-left behind: [$(sl zulu)]"
+[ -z "$(sll zulu)" ] || fail "uninstall left a per-session status-left-length behind"
 tm new-session -d -s posthumous -n w1
 sleep 0.9
-[ "$(sl zulu)" = "$before" ] \
-    || fail "a session created after uninstall still regenerated the strip — a hook is orphaned"
-pass "uninstall tears down the strip hooks, so nothing regenerates afterwards"
+[ -z "$(sl zulu)" ] \
+    || fail "a session created after uninstall regenerated the strip — a hook is orphaned"
+pass "uninstall unsets the per-session strip and tears down its hooks, so nothing writes it back"
 
 # === 16. edge pills ==========================================================
 # Content pinned outside the session pills as its own individually coloured
@@ -470,10 +481,10 @@ pass "uninstall tears down the strip hooks, so nothing regenerates afterwards"
 # would fail differently, so this section proves the actual contract instead:
 # join rule, per-pill colour, an unconfigured side never written, and the
 # session-only baseline is exactly unaffected when no edge pill is set.
-# A fresh forced run first, so the baseline reflects the CURRENT session set
-# (uninstall in section 15 orphaned the hooks, so "posthumous" from that
-# section never triggered an auto-regenerate — the strip on screen right now
-# is stale until something forces one, same as section 15 itself proved).
+# A fresh forced run first, so there IS a strip again and it reflects the
+# CURRENT session set: section 15's uninstall unset status-left outright and
+# tore down the hooks, so "posthumous" never triggered a regenerate and nothing
+# is installed at all until this forced run puts it back.
 strip force
 baseline="$(sl zulu)"
 [ -z "$(tm show-option -t zulu -qv status-right)" ] \

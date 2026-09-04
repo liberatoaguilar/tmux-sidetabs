@@ -28,10 +28,17 @@ SOCKET="sidetab_uninhook_$$"
 PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MARKER_NEW="${TMPDIR:-/tmp}/sidetabs_uninhook_new_$$"
 MARKER_RENAMED="${TMPDIR:-/tmp}/sidetabs_uninhook_renamed_$$"
+# Section 3 runs on a server of its own: section 2 has already uninstalled on
+# $SOCKET, and the status-line assertions need a server where the strip was
+# never torn down before they start.
+SOCKET2="sidetab_uninstrip_$$"
+STORE2="${TMPDIR:-/tmp}/sidetabs_uninstrip_store_$$.tsv"
 
 cleanup() {
     tmux -L "$SOCKET" kill-server 2>/dev/null || true
+    tmux -L "$SOCKET2" kill-server 2>/dev/null || true
     rm -f "$MARKER_NEW" "$MARKER_RENAMED"
+    rm -rf "$STORE2" "${STORE2}.lock" "${STORE2}"*.tmp.* "${STORE2}"*.live.*
 }
 trap cleanup EXIT
 
@@ -145,5 +152,124 @@ tmux -L "$SOCKET" rename-window -t main renamed-after-uninstall
 sleep 0.5
 [ -f "$MARKER_RENAMED" ] || fail "foreign window-renamed handler did not fire on a real rename event"
 pass "foreign window-renamed handler fires after uninstall"
+
+# === 3. status-line restore =================================================
+# The strip's status-left is a PER-SESSION option, and a per-session value
+# SHADOWS the global one — so a config reload alone cannot take the bar back,
+# whatever the global says. uninstall.sh has to unset it per session.
+#
+# Every assertion is made two ways on purpose:
+#   show-option -t <s> -qv    the SESSION-scoped value only (empty = unset; it
+#                             does not fall back to the global — verified)
+#   display-message -t <s> -p '#{status-left}'
+#                             what a client attached to that session actually
+#                             renders, i.e. whether the global shows through
+# The second is the one that matches the acceptance criterion; the first says
+# why.
+t2() { tmux -L "$SOCKET2" -f /dev/null "$@"; }
+sopt() { t2 show-option -t "$1" -qv "$2"; }        # session scope only
+rendered() { t2 display-message -t "$1" -p "#{$2}"; }
+
+GLOBAL_LEFT='USERS-OWN-STATUS-LEFT'
+GLOBAL_RIGHT='USERS-OWN-STATUS-RIGHT'
+SESSION_RIGHT='BETAS-OWN-STATUS-RIGHT'
+
+t2 new-session -d -s alpha -n w1 -x 200 -y 50
+t2 set-option -g @sidetabs-summary off
+t2 set-option -g @sidetabs-flag-store "$STORE2"
+t2 set-option -g status-left "$GLOBAL_LEFT"
+t2 set-option -g status-right "$GLOBAL_RIGHT"
+t2 set-option -g @sidetabs-session-strip on
+t2 run-shell "$PLUGIN_DIR/sidetabs.tmux"
+sleep 0.6
+t2 new-session -d -s beta -n w1
+t2 new-session -d -s gamma -n w1
+sleep 0.8
+# beta owns its status-right at SESSION scope, not just globally: an
+# unset-everything uninstall would take this out too, and a global-only check
+# would never notice.
+t2 set-option -t beta status-right "$SESSION_RIGHT"
+t2 run-shell "$PLUGIN_DIR/scripts/strip.sh force"
+
+# --- 3a. setup: the strip really is shadowing the user's status-left ---------
+for s in alpha beta gamma; do
+    [ -n "$(sopt "$s" status-left)" ] \
+        || fail "setup: $s has no generated status-left — the strip never ran"
+    [ "$(rendered "$s" status-left)" = "$(sopt "$s" status-left)" ] \
+        || fail "setup: $s does not render its per-session status-left"
+done
+# An `if`, not `[ … ] && fail`: under this file's `set -e` a false test in that
+# form exits the script with 0 assertions run and no output.
+if [ "$(rendered alpha status-left)" = "$GLOBAL_LEFT" ]; then
+    fail "setup: the per-session strip is NOT shadowing the global status-left — this test proves nothing"
+fi
+pass "setup: the generated per-session status-left shadows the user's global one"
+
+# The plugin owns status-right ONLY when @sidetabs-strip-right-1 is set, which
+# it is not here, so both the global and beta's own session value must have
+# survived generation untouched. (strip_smoke covers this for the generator;
+# repeated here because it is the precondition for 3c.)
+[ "$(sopt beta status-right)" = "$SESSION_RIGHT" ] \
+    || fail "setup: strip.sh wrote a status-right it does not own"
+
+# --- 3b. uninstall restores the status line ---------------------------------
+t2 run-shell "$PLUGIN_DIR/scripts/uninstall.sh"
+sleep 0.5
+
+for s in alpha beta gamma; do
+    [ -z "$(sopt "$s" status-left)" ] \
+        || fail "$s still has a per-session status-left after uninstall: [$(sopt "$s" status-left)]"
+    [ -z "$(sopt "$s" status-left-length)" ] \
+        || fail "$s still has a per-session status-left-length after uninstall"
+    [ "$(rendered "$s" status-left)" = "$GLOBAL_LEFT" ] \
+        || fail "$s does not render the global status-left after uninstall: [$(rendered "$s" status-left)]"
+done
+pass "uninstall unsets status-left/-length on every session; the global shows through again"
+
+# The strip's own debounce stamp is bookkeeping, not user state, and must not be
+# left behind either.
+[ -z "$(t2 show-option -gqv @sidetabs_strip_last_ms)" ] \
+    || fail "the strip's debounce stamp survived uninstall"
+pass "the plugin's own bookkeeping globals are cleared by uninstall"
+
+# --- 3c. a status-right the plugin never owned is NOT touched ---------------
+# This is the half that must NOT happen. Unsetting a side the plugin never wrote
+# would destroy the user's own clock — the very content strip.sh measures and
+# reserves rather than write over.
+[ "$(sopt beta status-right)" = "$SESSION_RIGHT" ] \
+    || fail "uninstall unset a session-scoped status-right the plugin never wrote: [$(sopt beta status-right)]"
+[ "$(t2 show-option -gqv status-right)" = "$GLOBAL_RIGHT" ] \
+    || fail "uninstall touched the global status-right"
+[ "$(rendered alpha status-right)" = "$GLOBAL_RIGHT" ] \
+    || fail "alpha no longer renders the user's own status-right after uninstall"
+pass "a status-right the plugin never owned survives uninstall untouched"
+
+# --- 3d. a status-right the plugin DID own is unset -------------------------
+# Setting @sidetabs-strip-right-1 hands that side over, so from here it IS the
+# plugin's to clear. Regenerating after the uninstall is fine: the hooks are
+# gone but strip.sh still runs when invoked directly, which is exactly the
+# "strip was live when you uninstalled" state this asserts on.
+t2 set-option -g @sidetabs-strip-right-1 'RIGHT-PILL'
+t2 run-shell "$PLUGIN_DIR/scripts/strip.sh force"
+for s in alpha beta gamma; do
+    case "$(sopt "$s" status-right)" in
+        *RIGHT-PILL*) ;;
+        *) fail "setup: $s has no plugin-generated status-right after handing the side over" ;;
+    esac
+    [ -n "$(sopt "$s" status-right-length)" ] \
+        || fail "setup: $s has no generated status-right-length"
+done
+
+t2 run-shell "$PLUGIN_DIR/scripts/uninstall.sh"
+sleep 0.5
+for s in alpha beta gamma; do
+    [ -z "$(sopt "$s" status-right)" ] \
+        || fail "$s kept a plugin-owned status-right after uninstall: [$(sopt "$s" status-right)]"
+    [ -z "$(sopt "$s" status-right-length)" ] \
+        || fail "$s kept a plugin-owned status-right-length after uninstall"
+    [ "$(rendered "$s" status-right)" = "$GLOBAL_RIGHT" ] \
+        || fail "$s does not render the global status-right after uninstall: [$(rendered "$s" status-right)]"
+done
+pass "a status-right the plugin DID own is unset, so the global shows through there too"
 
 echo "ALL UNINSTALL HOOK SMOKE TESTS PASSED"

@@ -306,13 +306,12 @@ documentation — please read before "simplifying" anything here.
 - **Two clients on one session share the narrowest budget.** One string is
   generated per session, so fitting the wider client would silently clip the
   narrower one.
-- **Uninstalling does not restore `status-left` by itself.** `status-left` is a
-  per-session option and the plugin sets it per session, so a *global*
-  `set -g status-left …` on a config reload is shadowed by the per-session value
-  the plugin left behind. After `scripts/uninstall.sh`, clear them yourself:
-  `tmux list-sessions -F '#{session_id}' | xargs -n1 -I{} tmux set-option -u -t {} status-left`
-  (and the same for `status-left-length`, and `status-right` if you had handed it
-  over). Only then does a reload put your own status line back.
+- **A config reload alone does not restore `status-left`.** It is a per-session
+  option and the plugin sets it per session, so a *global* `set -g status-left …`
+  is shadowed by the per-session value. `scripts/uninstall.sh` therefore unsets
+  it per session for you (see [Uninstall](#uninstall)) — but if you remove the
+  plugin without running that script, the strip stays on screen until you unset
+  it yourself.
 
 ## Agent status
 
@@ -431,15 +430,17 @@ tmux run-shell '/path/to/tmux-sidetabs/scripts/uninstall.sh'
 Then remove the plugin line from `~/.tmux.conf` and reload. (Reload restores your
 original `C-h` / `C-j` / `C-k` bindings.)
 
-If you had the [session strip](#session-strip) on, a reload is **not** enough to
-take the status line back — `status-left` is a per-session option, and the
-per-session values the plugin wrote shadow any global one your config sets. Clear
-them first:
+If you had the [session strip](#session-strip) on, the script puts the status
+line back for you. `status-left` is a **per-session** option and the plugin sets
+it per session, so a per-session value shadows any global one your config sets —
+a reload on its own would write a global that the leftover value hides. So
+`uninstall.sh` unsets `status-left` and `status-left-length` on every session,
+and your own (or tmux's default) status line shows through again immediately.
 
-```bash
-tmux list-sessions -F '#{session_id}' | xargs -n1 -I{} tmux set-option -u -t {} status-left
-tmux list-sessions -F '#{session_id}' | xargs -n1 -I{} tmux set-option -u -t {} status-left-length
-```
+`status-right` is unset only on the sessions where the plugin actually owned it,
+i.e. only if you had set `@sidetabs-strip-right-1`. A `status-right` the plugin
+never wrote is never cleared — the same rule that keeps it from writing over your
+clock while installed.
 
 ## Notes
 

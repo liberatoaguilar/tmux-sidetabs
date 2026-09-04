@@ -56,7 +56,7 @@ Settled during design review. Recorded because several are non-obvious.
 | D7 | Sessions share `@sidetabs-flag-colors` | One palette; a second one stays backward-compatible to add later |
 | D8 | Agent `attention` rolls up to the session pill | Highest-value signal in a ten-session strip |
 | D9 | Session color also tints the sidebar header pill | Makes the color mean something where you actually work |
-| D10 | Uninstall restores nothing | Matches `uninstall.sh`'s existing convention; a conf reload does it for free |
+| D10 | ~~Uninstall restores nothing~~ — **superseded.** Uninstall unsets the status-line options per session | The original rationale ("a conf reload does it for free") was simply **wrong**; see [D10 was wrong](#d10-was-wrong) below |
 | D11 | Strip defaults **off** | README ships TPM install instructions; a sidebar plugin must not eat your status bar |
 | D12 | Fix `uninstall.sh`'s bare-name hook unset | It currently nukes tmux-ticker's `-ga` handlers |
 | D13 | **Generate `status-left` in bash**, drop `#{S:}` | Kills `@strip_next` — the mechanism that goes stale across restarts |
@@ -340,9 +340,52 @@ disagree. A failing test is a louder alarm than a silent mismatch, and it costs 
 machinery than recording claimed indices in a global option (which can itself go
 stale across a plugin upgrade).
 
-Uninstall also unbinds `@sidetabs-session-flag-key` and leaves `status-left` /
-`status-right` as the plugin last set them — a conf reload restores them, because
-they come from the conf (D10).
+Uninstall also unbinds `@sidetabs-session-flag-key`.
+
+## D10 was wrong
+
+This document originally decided (D10) that uninstall should leave `status-left` /
+`status-right` exactly as the plugin last set them, "because a conf reload restores
+them — they come from the conf". `uninstall.sh` shipped with that reasoning written
+into a comment. **It is false**, and it was verified false on tmux 3.6b:
+
+- `status-left` is a **per-session** option, and `strip.sh` sets it per session —
+  that is D17, the design's own central decision.
+- A session-scoped value **completely shadows** the global one. With
+  `set-option -t alpha status-left SESSION_LEFT` in force, a later
+  `set -g status-left GLOBAL_LEFT` renders nothing, and
+  `display-message -t alpha -p '#{status-left}'` still answers `SESSION_LEFT`.
+- So a conf reload restores nothing. It rewrites a global that the leftover
+  per-session value is hiding. Only `set-option -u -t <session> status-left` —
+  dropping the session-scoped value so the global shows through — puts the bar back.
+
+The mistake was reasoning about *where the value came from* (the conf) instead of
+*at which scope the plugin wrote it* (the session). Every other option this plugin
+touches is either global or user state, so "reload the conf" had always been a
+sufficient answer before the strip existed; the strip is the first thing the plugin
+writes at session scope, and the old rule was carried over without rechecking it.
+
+It was worst exactly where it mattered most: once a conf stops setting `status-left`
+at all — which is what happens when the strip takes the side over — there is nothing
+left to reload *back*, so the user is stranded with the plugin's generated bar and no
+obvious way out. Ticket 08's acceptance criterion ("uninstalling the plugin and
+reloading the config restores the previous status line") did not hold as written.
+
+**Corrected decision.** `uninstall.sh` unsets, in one batched `source-file` (the same
+idiom `strip.sh` installs with, one fork rather than ~5ms per session):
+
+- `status-left` and `status-left-length` on **every** session, always;
+- `status-right` and `status-right-length` only when `@sidetabs-strip-right-1` is
+  set — the exact condition under which `strip.sh` writes that side. Unsetting a
+  side the plugin never wrote would destroy the user's own content, which is the
+  one thing the reserve machinery in §5c exists to avoid;
+- the plugin's own bookkeeping globals (debounce stamps, the restore claims). User
+  state — flags, timers, notes, session colours — is deliberately untouched: an
+  uninstall is not a delete.
+
+A failed `list-sessions` skips the per-session part entirely rather than
+half-restoring, per the house rule that a failed operation is a no-op, never a clear.
+`tests/uninstall_hooks_smoke.sh` §3 asserts all three outcomes on a scratch server.
 
 ## Configuration surface
 
@@ -391,7 +434,12 @@ index is ignored; a session name containing a literal backslash-t still matches
 
 **`tests/uninstall_hooks_smoke.sh`** — the drift check between `sidetabs.tmux` and
 `uninstall.sh`, plus a regression asserting that a foreign `-ga` handler registered
-above sidetabs' indices survives an uninstall.
+above sidetabs' indices survives an uninstall. §3 covers the status-line restore
+that supersedes D10: on a scratch server where the strip is live, uninstall must
+leave every session's `status-left` unset (so the global renders again), must leave
+a `status-right` it never owned exactly as it found it, and must unset one it did
+own. Each assertion is made both on the session-scoped option and on
+`display-message -p '#{status-left}'`, which is what a client actually renders.
 
 ## Implementation order
 
