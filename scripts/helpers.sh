@@ -22,6 +22,16 @@ set_session_option() {
     tmux set-option -t "$1" -q "$2" "$3"
 }
 
+# Remove a session user option entirely. NOT the same as setting it to "" —
+# show-option cannot tell an empty value from an unset one, and tmux's #{?opt,…}
+# ternary reads an empty value as false but a `#{opt}` interpolation still finds
+# the option, so "set to empty" is a third state nothing here wants. Mirrors
+# unset_window_option, and is best-effort for the same reason: unsetting an
+# option on a session that just died must not fail the caller.
+unset_session_option() {
+    tmux set-option -t "$1" -qu "$2" 2>/dev/null || true
+}
+
 get_pane_option() {
     local pane_id="$1" option="$2" default_value="$3" value
     value="$(tmux show-option -p -t "$pane_id" -qv "$option" 2>/dev/null)"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Window flag colours survive a server restart (ticket 03).
+# Window flag colours AND session colours survive a server restart
+# (tickets 03 + 04 — one store, one lock, one restore pass, so one test).
 #
 # Two halves against ONE socket. Phase A drives flag_cycle.sh / flag_set.sh on a
 # live server and asserts the durable TSV store they write through to; the
@@ -19,6 +20,11 @@
 #   7  a name containing escape-like characters (a literal backslash-t) still
 #      matches its row — the awk ENVIRON guarantee, which `awk -v` would break
 #   8  a closed session's rows are preserved and return with the session
+#   9  SESSION colours (@sidetabs_sflag, ticket 04) ride the same store in the
+#      empty-window-name row shape: set + clear write through, the two row
+#      shapes never leak into each other's restore pass, a live session colour
+#      is never clobbered, and unusable indices are ignored exactly as they are
+#      for windows
 # plus the house rule the notes work paid for once already: A FAILED WRITE IS A
 # NO-OP, NEVER A CLEAR — both an unreadable store and an unwritable directory
 # must leave the store byte-for-byte as it was.
@@ -49,6 +55,16 @@ pass() { echo "PASS: $*"; }
 run() { tmux -L "$SOCKET" run-shell "$*"; }
 winopt() { tmux -L "$SOCKET" show-option -w -t "$1" -qv "$2"; }
 gopt() { tmux -L "$SOCKET" show-option -gqv "$1"; }
+sopt() { tmux -L "$SOCKET" show-option -t "$1" -qv "$2"; }
+# The session picker/setter take a PANE id, never a session id: run-shell hands
+# its command string to `sh -c`, which expands a session id ("$0", "$1", …) into
+# a positional parameter and destroys it. Every session_flag_set.sh call below
+# therefore addresses a pane, exactly as the key binding does.
+#
+# No `head`/`exit` in the reader: under `set -o pipefail` a reader closing the
+# pipe early can SIGPIPE tmux and fail the whole pipeline.
+spane() { tmux -L "$SOCKET" list-panes -t "$1" -F '#{pane_id}' 2>/dev/null \
+        | awk '!seen { print; seen = 1 }'; }
 
 TAB="$(printf '\t')"
 # A window name holding a LITERAL backslash followed by 't'. `awk -v w='esc\tname'`
@@ -150,15 +166,19 @@ pass "a name containing a literal backslash-t is stored verbatim"
 
 # --- 5. Rows for keys that are not live are preserved -------------------------
 # Injected by hand, the way a previous server generation would have left them:
-# a window that no longer exists, two unusable index values, and the reserved
-# SESSION row shape (empty middle field) that the bottom-strip work will write.
-# A sync must carry every one of them through untouched — this store prunes
-# nothing, which is what lets a closed session's colour come back later.
+# a window that no longer exists, two unusable index values, and a SESSION row
+# (empty middle field) for a session that is not open. A sync must carry every
+# one of them through untouched — this store prunes nothing, which is what lets
+# a closed session's colour come back later.
+#
+# The session row names a session that does NOT exist on purpose. A row for a
+# LIVE session is a different case entirely: it is part of the snapshot, so a
+# sync rewrites (or removes) it from live state, and section 5b covers that.
 {
     printf 'main\tghost\t2\n'
     printf 'main\tbadidx\tzz\n'
     printf 'main\toorange\t99\n'
-    printf 'main\t\t5\n'
+    printf 'ghostsess\t\t5\n'
 } >> "$STORE"
 before="$(storerows)"
 run "$PLUGIN_DIR/scripts/flag_set.sh $wa 1"
@@ -166,8 +186,48 @@ sleep 0.4
 [ "$(storerows)" = "$before" ] || fail "a sync pruned rows ($before -> $(storerows))"
 [ "$(storerow main ghost)" = "2" ] || fail "sync dropped the row for a dead window"
 [ "$(storerow main badidx)" = "zz" ] || fail "sync dropped a row with an unusable index"
-[ "$(storerow main "")" = "5" ] || fail "sync dropped the reserved session row"
-pass "a sync preserves rows for dead windows, bad indices and session colours"
+[ "$(storerow ghostsess "")" = "5" ] || fail "sync dropped a closed session's colour row"
+pass "a sync preserves rows for dead windows, bad indices and closed sessions"
+
+# --- 5b. SESSION colours write through, in the empty-window-name row shape ----
+# The whole point of D6: one store file holds both shapes, so the two states
+# need one lock and one restore pass. A session row can never collide with a
+# window row, because a window whose name is the empty string is never recorded.
+pmain="$(spane main)"; poth="$(spane other)"
+[ -n "$pmain" ] && [ -n "$poth" ] || fail "setup: could not resolve a pane per session"
+run "$PLUGIN_DIR/scripts/session_flag_set.sh $pmain 2"
+run "$PLUGIN_DIR/scripts/session_flag_set.sh $poth 6"
+sleep 0.5
+[ "$(sopt main @sidetabs_sflag)" = "2" ] || fail "session colour not set on main: '$(sopt main @sidetabs_sflag)'"
+[ "$(sopt other @sidetabs_sflag)" = "6" ] || fail "session colour not set on other"
+[ "$(storerow main "")" = "2" ] || fail "no session row for main: '$(storerow main "")'"
+[ "$(storerow other "")" = "6" ] || fail "no session row for other"
+# The window rows for the same session must be untouched by a session write —
+# the two shapes are independent keys, not two readings of one row.
+[ "$(storerow main alpha)" = "1" ] || fail "setting a session colour disturbed a window row"
+# An out-of-range or garbage pick is inert in BOTH directions: no option change
+# and no store write. A stale menu built from a longer palette must not be able
+# to write an unrenderable index.
+run "$PLUGIN_DIR/scripts/session_flag_set.sh $pmain 99"
+run "$PLUGIN_DIR/scripts/session_flag_set.sh $pmain garbage"
+sleep 0.5
+[ "$(sopt main @sidetabs_sflag)" = "2" ] || fail "an unusable session pick changed the live colour"
+[ "$(storerow main "")" = "2" ] || fail "an unusable session pick changed the store row"
+pass "session colours write through to the empty-window-name row; bad picks are inert"
+
+# Clearing removes the record, exactly as it does for a window flag: the store
+# is a snapshot, so the clear is what makes the cleared state durable.
+run "$PLUGIN_DIR/scripts/session_flag_set.sh $poth none"
+sleep 0.4
+[ -z "$(sopt other @sidetabs_sflag)" ] || fail "clear left a live session colour"
+[ -z "$(storerow other "")" ] || fail "clear left other's session row: '$(storerow other "")'"
+[ "$(storerow main "")" = "2" ] || fail "clearing other's colour disturbed main's row"
+[ "$(storerow ghostsess "")" = "5" ] || fail "a session write pruned a closed session's row"
+# Put it back: section 6 closes `other`, and phase B needs its colour stored.
+run "$PLUGIN_DIR/scripts/session_flag_set.sh $poth 6"
+sleep 0.4
+[ "$(storerow other "")" = "6" ] || fail "other's session colour not restored before the close"
+pass "clearing a session colour removes its row and disturbs nothing else"
 
 # --- 6. A closed session keeps its rows ---------------------------------------
 tmux -L "$SOCKET" kill-session -t other
@@ -175,7 +235,8 @@ sleep 0.3
 run "$PLUGIN_DIR/scripts/flag_set.sh $wa 1"
 sleep 0.4
 [ "$(storerow other omega)" = "6" ] || fail "closing a session dropped its stored colour"
-pass "a closed session's row survives later syncs"
+[ "$(storerow other "")" = "6" ] || fail "closing a session dropped its own session-colour row"
+pass "a closed session's window AND session rows survive later syncs"
 
 # --- 7. A failed write is a NO-OP, never a clear (unreadable store) ----------
 # The lesson the notes work paid for: a step that swallows its own failure turns
@@ -220,6 +281,7 @@ run "$PLUGIN_DIR/scripts/flag_store.sh sync"
 sleep 0.4
 [ "$(storerow main alpha)" = "1" ] || fail "a sync during a restore rewrote the store"
 [ "$(storerow other omega)" = "6" ] || fail "a sync during a restore dropped a closed session's row"
+[ "$(storerow main "")" = "2" ] || fail "a sync during a restore dropped a live session's colour row"
 tmux -L "$SOCKET" set -g @sidetabs_restoring 0
 # Put alpha back to its stored value, so phase B starts from a store that
 # matches what sections 1-6 built.
@@ -244,6 +306,18 @@ for w in beta delta badidx oorange "$ESCNAME" livewin alpha; do
     tmux -L "$SOCKET" new-window -t main -n "$w"
 done
 tmux -L "$SOCKET" new-session -d -s other -n omega
+# Session-colour fixtures, mirroring the window ones one scope up: `livesess`
+# carries a live colour the restore must not clobber, and `badsess`/`oosess`
+# have rows whose index is unusable and must be ignored rather than applied.
+{
+    printf 'livesess\t\t3\n'
+    printf 'badsess\t\tzz\n'
+    printf 'oosess\t\t99\n'
+} >> "$STORE"
+for s in livesess badsess oosess; do
+    tmux -L "$SOCKET" new-session -d -s "$s" -n w1
+done
+tmux -L "$SOCKET" set-option -t livesess -q @sidetabs_sflag 7
 sleep 0.3
 
 wa="$(winid main alpha)"; wb="$(winid main beta)"; wd="$(winid main delta)"
@@ -278,12 +352,40 @@ pass "restore never overwrites a flag already set on a live window"
 [ -z "$(winopt "$wa2" @sidetabs_flag)" ] || fail "a duplicate-named window was seeded from the first one's record"
 pass "unmatched, unusable and duplicate-name records are ignored, never misapplied"
 
-# The reserved session row (main / empty / 5) must reach no window at all.
+# A SESSION row must never reach a window. ghostsess/""/5 names no live session,
+# so if the window pass ever stopped filtering on the middle field, index 5 is
+# what would show up on some window — nothing else in this store holds a 5.
+#
+# The read is #{@sidetabs_flag} on windows, and the option chain resolves
+# pane -> window -> session -> global, so this would ALSO catch a session
+# colour written under the window option's name (the reason SFLAG_OPTION has a
+# name of its own).
 badfive="$(tmux -L "$SOCKET" list-windows -a -F "#{window_name}${TAB}#{@sidetabs_flag}" \
     | awk -F"$TAB" '$2 == "5" { print $1 }' || true)"
-[ -z "$badfive" ] || fail "the reserved session row was applied to window(s): $badfive"
-[ "$(storerow main "")" = "5" ] || fail "restore disturbed the reserved session row"
-pass "reserved session rows are skipped by the window restore and left in place"
+[ -z "$badfive" ] || fail "a session-colour row was applied to window(s): $badfive"
+[ "$(storerow ghostsess "")" = "5" ] || fail "restore disturbed a closed session's colour row"
+pass "session rows are skipped by the window restore and left in place"
+
+# --- session colours restore, by session name --------------------------------
+[ "$(sopt main @sidetabs_sflag)" = "2" ] \
+    || fail "main's session colour not restored: '$(sopt main @sidetabs_sflag)' (want 2)"
+[ "$(sopt other @sidetabs_sflag)" = "6" ] \
+    || fail "a reopened session did not regain its colour: '$(sopt other @sidetabs_sflag)'"
+pass "session colours are restored, matched by session name"
+
+[ "$(sopt livesess @sidetabs_sflag)" = "7" ] || fail "restore clobbered a live session colour"
+pass "restore never overwrites a colour already set on a live session"
+
+[ -z "$(sopt badsess @sidetabs_sflag)" ] || fail "a non-numeric stored session index was applied"
+[ -z "$(sopt oosess @sidetabs_sflag)" ] || fail "an out-of-palette stored session index was applied"
+pass "unusable session-colour records are ignored, never misapplied"
+
+# The mirror of the check above: a WINDOW row must never reach a session. Only
+# main/livewin holds a 4, and it is a window row.
+badsess4="$(tmux -L "$SOCKET" list-sessions -F "#{session_name}${TAB}#{@sidetabs_sflag}" \
+    | awk -F"$TAB" '$2 == "4" { print $1 }' || true)"
+[ -z "$badsess4" ] || fail "a window-flag row was applied to session(s): $badsess4"
+pass "window rows are skipped by the session restore"
 
 [ "$(winopt "$wo" @sidetabs_flag)" = "6" ] \
     || fail "a reopened session did not regain its colour: '$(winopt "$wo" @sidetabs_flag)'"

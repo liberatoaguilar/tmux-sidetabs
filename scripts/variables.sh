@@ -22,6 +22,20 @@ TIMER_RESTORED_OPTION="@sidetabs_timer_restored"
 FLAG_RESTORED_OPTION="@sidetabs_flag_restored"
 
 # Per-session user options
+# The session's own colour. SAME encoding as FLAG_OPTION below (a 1-based index
+# into @sidetabs-flag-colors, unset = none) and the SAME palette — sessions
+# deliberately do not get a second colour list, so reordering the palette
+# recolours window flags and session colours alike, in one place.
+#
+# The name is distinct from FLAG_OPTION on purpose, and not just for clarity:
+# tmux resolves #{@opt} up the pane -> window -> session -> global chain, so a
+# session option NAMED @sidetabs_flag would be inherited by every unflagged
+# window in the session and paint every row. A separate name is the only way
+# the two can coexist. (Verified on tmux 3.6b: with @sidetabs_sflag set on a
+# session, `list-windows -a -F '#{@sidetabs_sflag}'` reports it for every window
+# of that session and empty for other sessions — which is exactly the
+# inheritance render.sh relies on to read it for free.)
+SFLAG_OPTION="@sidetabs_sflag"
 COLLAPSED_OPTION="@sidetabs_collapsed"
 WIDTH_OPTION="@sidetabs_width"                   # current expanded width (synced)
 LAST_REFRESH_OPTION="@sidetabs_last_refresh_ms"  # debounce stamp
@@ -110,6 +124,11 @@ DEFAULT_FLAG_COLORS="#ebcb8b #a3be8c #81a1c1 #b48ead #d08770 #8fbcbb #9d7cd8 #8b
 DEFAULT_FLAG_NAMES="yellow green blue purple orange teal indigo slate"
 DEFAULT_FLAG_KEY="C-c"
 DEFAULT_FLAG_PICKER_KEY="M-c"
+# Session colour: a PICKER ONLY, with no cycle counterpart. A window flag is
+# flipped daily (hence C-c's one-press step), but a session colour is set once
+# and then left alone, so stepping through the palette to reach slot 6 would be
+# the wrong affordance for the only way to set it.
+DEFAULT_SESSION_FLAG_KEY="M-s"
 DEFAULT_TIMER_KEY="C-t"
 DEFAULT_TIMER_MENU_KEY="M-t"
 DEFAULT_TIMER_AUTOFOCUS="on"   # auto pause/resume timers on tab focus
@@ -125,11 +144,12 @@ DEFAULT_TIMER_TAGS_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/tags
 #   session_name <TAB> window_name <TAB> index   -- a WINDOW flag
 #   session_name <TAB>     (empty)   <TAB> index -- a SESSION colour
 #
-# The empty-middle-field shape is reserved for the session colour landing with
-# the bottom strip; flag_restore.sh already skips those rows so the two can
-# share one file, one lock and one restore pass. The store is rewritten as a
-# whole-state SNAPSHOT on every change (see flag_store.sh) rather than patched
-# row by row, which is what makes a clear persist and a rename self-heal.
+# The empty-middle-field shape holds SFLAG_OPTION, the per-session colour: the
+# two states share one file, one lock and one restore pass, and can never
+# collide because a window whose name is the empty string is never recorded at
+# all. The store is rewritten as a whole-state SNAPSHOT on every change (see
+# flag_store.sh) rather than patched row by row, which is what makes a clear
+# persist and a rename self-heal.
 DEFAULT_FLAG_STORE="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/flags.tsv"
 DEFAULT_FLAG_RESTORE="on"      # re-seed flag colours from the store after a restore
 

@@ -132,6 +132,23 @@ bind_keys() {
                 'send-keys $flag_picker_key'"
     fi
 
+    # Session colour: a picker with no cycle counterpart (a session colour is
+    # set once; a window flag is flipped daily). The target passed through is
+    # the PANE id, NOT #{session_id}: run-shell hands its command string to
+    # `sh -c`, and a session id is spelled "$0"/"$1"/… so sh expands it away to
+    # the literal "sh" (measured on tmux 3.6b). session_flag_picker.sh resolves
+    # the session from the pane instead, and threads the same pane id into the
+    # menu entries, which go through `sh -c` a second time.
+    local session_flag_key
+    session_flag_key="$(get_tmux_option "@sidetabs-session-flag-key" "$DEFAULT_SESSION_FLAG_KEY")"
+    case "$session_flag_key" in none) session_flag_key="" ;; esac
+    if [ -n "$session_flag_key" ]; then
+        tmux bind-key -n "$session_flag_key" \
+            "if-shell -F '#{==:#{@is_sidetab},1}' \
+                'run-shell -b \"$SCRIPTS_DIR/session_flag_picker.sh #{pane_id} #{client_name}\"' \
+                'send-keys $session_flag_key'"
+    fi
+
     timer_key="$(get_tmux_option "@sidetabs-timer-key" "$DEFAULT_TIMER_KEY")"
     case "$timer_key" in none) timer_key="" ;; esac
     if [ -n "$timer_key" ]; then

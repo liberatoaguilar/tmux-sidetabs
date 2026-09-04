@@ -7,12 +7,11 @@
 # name, window name), and this is the third instance of that pattern.
 #
 # Store shape — three tab-separated columns:
-#   session_name <TAB> window_name <TAB> index   -- a WINDOW flag
-#   session_name <TAB>     (empty)   <TAB> index -- a SESSION colour
-# The empty-middle-field row is reserved for the session colour that lands with
-# the bottom strip. Nothing here writes one yet, and the merge below carries any
-# it finds through untouched (a session row's key can never collide with a
-# window row's, because a window with an empty name is never recorded at all).
+#   session_name <TAB> window_name <TAB> index   -- a WINDOW flag  (@sidetabs_flag)
+#   session_name <TAB>     (empty)   <TAB> index -- a SESSION colour (@sidetabs_sflag)
+# A session row's key can never collide with a window row's, because a window
+# with an empty name is never recorded at all. Both shapes are snapshotted by
+# the same sync below, under one lock, and replayed by one restore pass.
 #
 # SNAPSHOT-MERGE, not row surgery. Any flag change rewrites the whole store from
 # live state:
@@ -44,8 +43,9 @@ TAB="$(printf '\t')"
 
 store_path() { get_tmux_option '@sidetabs-flag-store' "$DEFAULT_FLAG_STORE"; }
 
-# flag_store_write_live <file>: one row per live window, "session <TAB> window <TAB> value",
-# where value is the window's flag index or empty for "live but unflagged" (the
+# flag_store_write_live <file>: one row per live window AND one per live session,
+# "session <TAB> window <TAB> value" (the window field empty on a session row),
+# where value is the flag index or empty for "live but unflagged" (the
 # distinction the merge needs in order to REMOVE a cleared row).
 #
 # The format puts the flag first behind a literal "f" and the window name last,
@@ -60,7 +60,7 @@ store_path() { get_tmux_option '@sidetabs-flag-store' "$DEFAULT_FLAG_STORE"; }
 #     the same way, so the two still match. (A tab in a SESSION name would still
 #     shift — the same limitation note.sh restore has always carried.)
 flag_store_write_live() {
-    local out="$1" fval wid sname wname
+    local out="$1" fval wid sid sname wname
     : > "$out" 2>/dev/null || return 1
     # Sentinel: awk's classic FNR==NR two-file idiom breaks when the first file
     # is EMPTY (awk never opens it, so the SECOND file's records satisfy
@@ -77,6 +77,24 @@ flag_store_write_live() {
         printf '%s\t%s\t%s\n' "$sname" "$wname" "${fval#f}" >> "$out" 2>/dev/null || return 1
     done <<< "$(tmux list-windows -a \
         -F "f#{$FLAG_OPTION}${TAB}#{window_id}${TAB}#{session_name}${TAB}#{window_name}" 2>/dev/null)"
+    # Session colours, in the reserved empty-window-name shape. Same field
+    # order and the same "f" prefix, for the same two reasons: an unset option
+    # must not shift the fields under IFS=TAB, and the name goes last so a tab
+    # inside it lands in the remainder rather than creating a fourth field.
+    #
+    # A session whose colour is unset still gets a row here with an EMPTY value,
+    # exactly like an unflagged window: that is the signal the merge needs to
+    # REMOVE a stored row, which is how clearing a session colour persists.
+    while IFS="$TAB" read -r fval sid sname; do
+        [ -n "$sid" ] || continue
+        # An empty session name would make an all-empty row: no key, and
+        # indistinguishable from a blank line. Skipped for the same reason an
+        # empty window name is — it has no representable key.
+        [ -n "$sname" ] || continue
+        sname="${sname//$TAB/ }"
+        printf '%s\t\t%s\n' "$sname" "${fval#f}" >> "$out" 2>/dev/null || return 1
+    done <<< "$(tmux list-sessions \
+        -F "f#{$SFLAG_OPTION}${TAB}#{session_id}${TAB}#{session_name}" 2>/dev/null)"
     return 0
 }
 

@@ -73,6 +73,9 @@ case "$flag_key" in none) flag_key="" ;; esac
 flag_picker_key="$(get_tmux_option "@sidetabs-flag-picker-key" "$DEFAULT_FLAG_PICKER_KEY")"
 case "$flag_picker_key" in none) flag_picker_key="" ;; esac
 [ -n "$flag_picker_key" ] && tmux unbind-key -n "$flag_picker_key" 2>/dev/null || true
+session_flag_key="$(get_tmux_option "@sidetabs-session-flag-key" "$DEFAULT_SESSION_FLAG_KEY")"
+case "$session_flag_key" in none) session_flag_key="" ;; esac
+[ -n "$session_flag_key" ] && tmux unbind-key -n "$session_flag_key" 2>/dev/null || true
 timer_key="$(get_tmux_option "@sidetabs-timer-key" "$DEFAULT_TIMER_KEY")"
 case "$timer_key" in none) timer_key="" ;; esac
 [ -n "$timer_key" ] && tmux unbind-key -n "$timer_key" 2>/dev/null || true

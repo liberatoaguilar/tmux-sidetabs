@@ -68,6 +68,7 @@ run-shell '/path/to/tmux-sidetabs/sidetabs.tmux'
 | `prefix + /` | Fuzzy-search this session's windows in a popup and jump to one |
 | `C-c` (in sidebar) | Cycle the current window's flag color one step forward (yellow → green → blue → purple → orange → teal → indigo → slate → none) |
 | `M-c` (in sidebar) | Open the flag color **picker**: a menu of live color swatches — press `1`-`8` to jump straight to a color, `0` to clear |
+| `M-s` (in sidebar) | Open the **session** color picker (same palette). The color tints the sidebar header pill in every window of that session; `0` clears it |
 | `C-t` (in sidebar) | Start / pause / resume the current window's stopwatch; counting pauses when the window loses focus (hourglass glyph ⏳ = auto-held, counting resumes on focus) |
 | `M-t` (in sidebar) | Open the timer menu: adjust total time, cancel current interval, reset the timer, assign a client, or (once tagged, with a tags file configured) register the current repo |
 | `M-n` (in sidebar) | Edit the current window's **note** in a popup (`$EDITOR`); multi-line text is kept, save an empty buffer to clear it. Windows with a note show a sticky-note glyph  |
@@ -107,8 +108,9 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-flag-fg` | `#2e3440` | Flag pill text color (nord0) |
 | `@sidetabs-flag-key` | `C-c` | Key to cycle the current window's flag color (set to `none` to disable — applies to every key option) |
 | `@sidetabs-flag-picker-key` | `M-c` | Key to open the flag color picker menu (`none` to disable) |
-| `@sidetabs-flag-store` | `~/.local/share/tmux-sidetabs/flags.tsv` | Path to the durable flag-color store (TSV: session, window name, palette index — an empty window name is reserved for a per-session color). Rewritten as a whole-state snapshot on every flag change, so clears persist and rows for sessions/windows that are closed are kept for their return |
-| `@sidetabs-flag-restore` | `on` | `off` to disable re-seeding flag colors from the store — both after a tmux-resurrect restore and via the boot-time `client-attached` fallback |
+| `@sidetabs-session-flag-key` | `M-s` | Key to open the **session** color picker (`none` to disable). Sessions share `@sidetabs-flag-colors`; there is no cycle key, since a session color is set once rather than flipped daily |
+| `@sidetabs-flag-store` | `~/.local/share/tmux-sidetabs/flags.tsv` | Path to the durable flag-color store (TSV: session, window name, palette index — an **empty** window name is that session's own color). Rewritten as a whole-state snapshot on every color change, so clears persist and rows for sessions/windows that are closed are kept for their return |
+| `@sidetabs-flag-restore` | `on` | `off` to disable re-seeding window flag colors **and** session colors from the store — both after a tmux-resurrect restore and via the boot-time `client-attached` fallback |
 | `@sidetabs-timer-key` | `C-t` | Key to start / pause the current window's timer |
 | `@sidetabs-timer-menu-key` | `M-t` | Key to open the timer menu (adjust total, cancel current interval, reset, assign client, register repo) |
 | `@sidetabs-timer-autofocus` | `on` | `off` to disable auto pause/resume when window loses/gains focus |
@@ -265,9 +267,16 @@ original `C-h` / `C-j` / `C-k` bindings.)
   *some* color); `M-c` opens a picker menu showing each color as a real swatch, with
   the current one marked, so you can jump straight to one with a number key. Both act
   on the same per-window state, so they're interchangeable.
-- The palette is an ordered list and the window option stores an **index** into it, so
-  reordering `@sidetabs-flag-colors` recolors existing flags. Append new colors at the
-  end to avoid that.
+- **Session colors**: `M-s` opens the same picker for the **session** rather than the
+  window. The color it sets tints the sidebar's header pill — the session-name bar at
+  the top — in *every* window of that session, so a glance at any sidebar tells you
+  which session you're in. `0` clears it and the header goes back to
+  `@sidetabs-header-bg`. There is no cycle key: a session color is set once, unlike a
+  window flag you flip through the day.
+- The palette is an ordered list and both the window option and the session option
+  store an **index** into it, so reordering `@sidetabs-flag-colors` recolors existing
+  window flags and session colors alike. Append new colors at the end to avoid that.
+  Sessions deliberately share the window palette — there is one list to configure.
 - Bell notifications (red row) always outrank flag colors — a window with a pending
   bell displays in red regardless of its flag.
 - **Timer behavior**: When a timer is running in a focused window, it counts only while
@@ -294,14 +303,15 @@ original `C-h` / `C-j` / `C-k` bindings.)
   between the last logged event and the server dying are not recoverable.
   Disable with `@sidetabs-timer-restore off`.
 - **Flag colors survive restarts too.** Every set and every clear — from `C-c`,
-  from the `M-c` picker, and from a window rename — writes the whole live flag
-  state through to `@sidetabs-flag-store`, and the post-restore hook replays it
-  onto the new server, matched by session + window *name* (ids change across
-  restarts; with duplicate names only the first window wins). A window that
-  already carries a flag is never overwritten, a record naming a window that no
-  longer exists is ignored rather than misapplied, and a record whose index no
-  longer fits `@sidetabs-flag-colors` is dropped. Disable with
-  `@sidetabs-flag-restore off`.
+  from the `M-c` picker, from the `M-s` session picker, and from a window rename
+  — writes the whole live flag state through to `@sidetabs-flag-store`, and the
+  post-restore hook replays it onto the new server, matched by session + window
+  *name* for a window flag and by session *name* for a session color (ids change
+  across restarts; with duplicate window names only the first window wins). A
+  window or session that already carries a color is never overwritten, a record
+  naming something that no longer exists is ignored rather than misapplied, and
+  a record whose index no longer fits `@sidetabs-flag-colors` is dropped.
+  Disable with `@sidetabs-flag-restore off`.
 
   The store is a **snapshot**, not a ledger: each write rewrites it from live
   state, so a flag you cleared is genuinely gone, while rows for sessions and
@@ -419,6 +429,8 @@ cannot leak in:
 ./tests/resurrect_smoke.sh       # tmux-resurrect pre/post hooks
 ./tests/resurrect_scrub_smoke.sh # post-save rewrite of the save file
 ./tests/timer_restore_smoke.sh   # re-seeding timers from the event log
+./tests/flag_restore_smoke.sh    # durable window flag + session colors, and their restore
+./tests/session_flag_smoke.sh    # the M-s session color picker and the header tint
 ./tests/notes_smoke.sh           # per-window notes + durable store
 ./tests/agent_status_smoke.sh    # agent status: aggregation, visit-clear, render
 ./tests/tag_menu_smoke.sh        # assign-client submenu + register-repo passthrough

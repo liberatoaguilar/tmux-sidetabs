@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
-# Re-seed per-window flag colours after a tmux server restart. The live state
-# (the @sidetabs_flag window option) dies with the server — tmux does not save
-# user options and neither does tmux-resurrect — so the TSV written by
-# flag_store.sh is the durable record. Replay it onto the live windows.
+# Re-seed flag colours after a tmux server restart — both the per-WINDOW flag
+# (@sidetabs_flag) and the per-SESSION colour (@sidetabs_sflag). The live state
+# dies with the server — tmux does not save user options and neither does
+# tmux-resurrect — so the TSV written by flag_store.sh is the durable record.
+# Replay it onto the live windows and sessions.
 #
-# Matching is by session + window NAME: window ids do not survive a restart.
-# First window with a given name wins, a window whose name has changed since the
-# flag was set simply does not match, and a row naming a window that no longer
-# exists is never applied at all (the loop walks LIVE windows and looks each one
-# up, rather than walking the store and hunting for a target).
+# Matching is by session + window NAME for a window flag, and by session NAME
+# alone for a session colour: ids do not survive a restart. First window with a
+# given name wins, a window whose name has changed since the flag was set simply
+# does not match, and a row naming a window that no longer exists is never
+# applied at all (the loop walks LIVE entities and looks each one up, rather than
+# walking the store and hunting for a target).
 #
-# A window that ALREADY has a flag is never touched. Whatever is live now was
-# either set by the user this generation or seeded by an earlier run, and in
+# Anything that ALREADY carries a colour is never touched. Whatever is live now
+# was either set by the user this generation or seeded by an earlier run, and in
 # both cases it is fresher than the store.
 #
-# Rows in the reserved SESSION shape (empty middle field) are skipped: they are
-# a session colour, not a window flag, and applying one to a window would paint
-# the wrong thing. They share this file so the two states need only one lock and
-# one restore pass.
+# The two row shapes are told apart by the middle field, and each pass ignores
+# the other's rows: a session row applied to a window (or vice versa) would paint
+# the wrong thing entirely. They share this file so the two states need only one
+# lock and one restore pass.
 #
 # Two delivery paths, deliberately not symmetric — the same split timer_restore
 # uses, for the same reason:
@@ -115,6 +117,37 @@ while IFS="$TAB" read -r fval wid sname wname; do
     changed=1
 done <<< "$(tmux list-windows -a \
     -F "f#{$FLAG_OPTION}${TAB}#{window_id}${TAB}#{session_name}${TAB}#{window_name}" 2>/dev/null)"
+
+# --- session colours ---------------------------------------------------------
+# The same walk over LIVE sessions, matching the reserved empty-window-name row
+# shape. Session names are unique within a server, so there is no first-wins
+# question here; `sapplied` is kept anyway so a duplicate row in a hand-edited
+# store cannot be applied twice.
+#
+# Deliberately NOT gated on `changed`: a store with only session rows must still
+# restore, and a window pass that found nothing says nothing about the sessions.
+sapplied="$US"
+while IFS="$TAB" read -r fval sid sname; do
+    [ -n "$sid" ] || continue
+    [ -n "$sname" ] || continue   # unrepresentable key; never recorded either
+    sname="${sname//$TAB/ }"
+    case "$sapplied" in *"${US}${sname}${US}"*) continue ;; esac
+    # ENVIRON again, not -v: a session name may hold a literal backslash-t just
+    # as a window name may, and -v would expand it into a real tab and never
+    # match. `$2 == ""` is what confines this lookup to session rows.
+    idx="$(s="$sname" awk -F"$TAB" \
+        '$2 == "" && $1 == ENVIRON["s"] { print $3; exit }' \
+        "$STORE" 2>/dev/null || true)"
+    [ -n "$idx" ] || continue
+    case "$idx" in *[!0-9]*) continue ;; esac
+    { [ "$idx" -ge 1 ] && [ "$idx" -le "$nc" ]; } || continue
+    sapplied="${sapplied}${sname}${US}"
+    # Live colour wins, for the same reason a live window flag does.
+    [ -n "${fval#f}" ] && continue
+    set_session_option "$sid" "$SFLAG_OPTION" "$idx"
+    changed=1
+done <<< "$(tmux list-sessions \
+    -F "f#{$SFLAG_OPTION}${TAB}#{session_id}${TAB}#{session_name}" 2>/dev/null)"
 
 if [ "$changed" = "1" ]; then
     "$CURRENT_DIR/refresh.sh" force
