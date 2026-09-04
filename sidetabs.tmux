@@ -25,6 +25,43 @@ register_hooks() {
     # back if the window is ever renamed back.
     tmux set-hook -g 'window-renamed[1]' \
         "run-shell -b '$SCRIPTS_DIR/flag_store.sh sync'"
+    # --- bottom session strip (@sidetabs-session-strip, default off) ---------
+    # Registered HERE, in the plugin, rather than typed into a conf — that is
+    # the fix for the reported bug. The strip this replaces kept its
+    # neighbour-colour bookkeeping in per-session options refreshed by hooks
+    # that existed only in a RUNNING server, so after a machine restart the
+    # options were stale and the separators came back wrong. Hooks registered by
+    # the plugin are re-registered every time the conf is loaded, so they
+    # survive a restart. Every one of these is a no-op while the switch is off:
+    # strip.sh checks it before touching anything.
+    #
+    # The strip is a per-SESSION status-left, so the events that matter are the
+    # ones that change the set of sessions, what is happening inside one, or
+    # which session a client is looking at.
+    tmux set-hook -g session-created \
+        "run-shell -b '$SCRIPTS_DIR/strip.sh'"
+    tmux set-hook -g session-closed \
+        "run-shell -b '$SCRIPTS_DIR/strip.sh'"
+    tmux set-hook -g session-renamed \
+        "run-shell -b '$SCRIPTS_DIR/strip.sh'"
+    # A session rename changes the KEY its colour is filed under in the durable
+    # store (session NAME — session ids do not survive a restart), exactly as a
+    # window rename does for a window flag. Without this the colour would come
+    # back on the OLD name after a restart and the renamed session would look
+    # uncoloured. The row under the old name is left behind untouched, which is
+    # what brings the colour back if the session is ever renamed back.
+    tmux set-hook -g 'session-renamed[1]' \
+        "run-shell -b '$SCRIPTS_DIR/flag_store.sh sync'"
+    # A bell is one of the two things that can recolour a pill. Note this is a
+    # real hook on the ALERT, not a poll of #{session_bell_flag} — that format
+    # is broken on tmux 3.6b and always reports 0 (see strip.sh).
+    tmux set-hook -g alert-bell \
+        "run-shell -b '$SCRIPTS_DIR/strip.sh'"
+    # Resizing changes how much of the strip fits. Nothing shrinks yet (the
+    # strip simply clips), but status-left-length is regenerated from the real
+    # session list here so a later width cascade has its trigger already wired.
+    tmux set-hook -g client-resized \
+        "run-shell -b '$SCRIPTS_DIR/strip.sh'"
     tmux set-hook -g 'session-window-changed[0]' \
         "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
     tmux set-hook -g 'session-window-changed[1]' \
@@ -59,6 +96,18 @@ register_hooks() {
     # seeding on a LATER attach would paint a freshly created window with a
     # long-gone same-named window's colour.
     tmux set-hook -g 'client-attached[3]'        "run-shell -b '$SCRIPTS_DIR/flag_restore.sh boot'"
+    # Strip regeneration on the client transitions. A client attaching to, or
+    # switching to, a session needs that session's own status-left to exist —
+    # each string highlights ITS session as the current one, which is what lets
+    # two clients on two different sessions each see themselves highlighted.
+    # Detach matters for the same reason attach does: it is a session the strip
+    # may never have been generated for while it had no client.
+    # flag_restore.sh[3] above ends with its own `strip.sh force` when it
+    # actually re-seeded something, so the strip cannot be left showing
+    # pre-restore colours if these two race (both are `run-shell -b`).
+    tmux set-hook -g 'client-attached[4]'        "run-shell -b '$SCRIPTS_DIR/strip.sh'"
+    tmux set-hook -g 'client-session-changed[2]' "run-shell -b '$SCRIPTS_DIR/strip.sh'"
+    tmux set-hook -g 'client-detached[2]'        "run-shell -b '$SCRIPTS_DIR/strip.sh'"
     tmux set-hook -g window-linked \
         "run-shell -b '$SCRIPTS_DIR/refresh.sh force'"
     tmux set-hook -g window-unlinked \
@@ -215,6 +264,13 @@ initial_setup() {
         | while read -r wid; do
             "$SCRIPTS_DIR/create_sidebar.sh" "$wid"
           done
+    # Draw the strip once at load, so enabling @sidetabs-session-strip and
+    # reloading the conf shows it immediately instead of waiting for the next
+    # session event. `force` because a conf reload is exactly the moment a
+    # debounce must not swallow the only regenerate that will happen. Still a
+    # no-op while the switch is off, and `|| true` so a strip failure can never
+    # abort plugin load.
+    "$SCRIPTS_DIR/strip.sh" force || true
 }
 
 main() {

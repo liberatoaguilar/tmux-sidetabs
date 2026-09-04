@@ -151,4 +151,11 @@ done <<< "$(tmux list-sessions \
 
 if [ "$changed" = "1" ]; then
     "$CURRENT_DIR/refresh.sh" force
+    # The session strip renders session colours, so a re-seed changes it too.
+    # `force`, and NOT left to the client-attached strip hook: that hook and
+    # this script's own boot hook are both `run-shell -b`, so the strip can
+    # easily regenerate BEFORE the colours land and would then show the
+    # pre-restore state until the next unrelated event. No-op while the strip
+    # is off; `|| true` so a strip failure never makes a restore look failed.
+    "$CURRENT_DIR/strip.sh" force || true
 fi

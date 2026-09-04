@@ -35,8 +35,17 @@ hook_indices=(
     'client-attached[1]'
     'client-attached[2]'
     'client-attached[3]'
+    'client-attached[4]'
+    'client-session-changed[2]'
     'client-detached[0]'
     'client-detached[1]'
+    'client-detached[2]'
+    'client-resized[0]'
+    'session-created[0]'
+    'session-closed[0]'
+    'session-renamed[0]'
+    'session-renamed[1]'
+    'alert-bell[0]'
     'window-linked[0]'
     'window-unlinked[0]'
     'pane-focus-in[0]'
@@ -91,4 +100,11 @@ for k in 'C-j' 'C-k' 'C-n' 'C-r' 'C-x' 'M-j' 'M-k'; do
     tmux unbind-key -n "$k" 2>/dev/null || true
 done
 
-tmux display-message "tmux-sidetabs uninstalled. Reload ~/.tmux.conf to restore C-j/C-k."
+# The session strip's status-left is deliberately NOT restored. Uninstall
+# restores nothing anywhere else either, and status-left comes from the user's
+# own conf: reloading it — which the message below already asks for — puts the
+# original back for free. Snapshotting and replaying it would mean keeping a
+# durable copy of an option this plugin does not own, and getting that wrong
+# would overwrite a status line the user changed in the meantime.
+
+tmux display-message "tmux-sidetabs uninstalled. Reload ~/.tmux.conf to restore C-j/C-k and status-left."

@@ -179,3 +179,47 @@ DEFAULT_AGENT_STATUS="on"
 # Done check glyph fg (@sidetabs-agent-done-fg). Nord green; the only agent
 # state that adds COLOR to the row's foreground rather than recoloring the pill.
 DEFAULT_AGENT_DONE_FG="#a3be8c"
+
+# --- Session strip (scripts/strip.sh) ----------------------------------------
+# The bottom status-left strip: one pill per session, coloured by what is
+# actually happening in it. DEFAULT OFF, and while off strip.sh returns before
+# touching a single tmux option — this plugin ships TPM install instructions,
+# and a sidebar plugin must not silently eat somebody's status bar.
+#
+# The strip is GENERATED, not templated: strip.sh emits a literal status-left
+# per session rather than a #{S:} loop, because a loop cannot see its own
+# neighbours and the old workaround (per-session @strip_next options refreshed
+# by hooks that lived only in a running server) went stale across every restart.
+DEFAULT_SESSION_STRIP="off"
+# Debounce stamp for the regenerate, the exact twin of LAST_REFRESH_OPTION.
+# A burst of session churn (a resurrect restore creating eight sessions) must
+# collapse into one regenerate; `strip.sh force` is the escape for the events
+# that must never be dropped.
+STRIP_LAST_OPTION="@sidetabs_strip_last_ms"
+STRIP_DEBOUNCE_MS="100"
+
+# Pill colours. Precedence is bell|attention > session colour > current > idle,
+# the same rule the sidebar's window rows use.
+DEFAULT_STRIP_BELL_BG="#bf616a"
+DEFAULT_STRIP_BELL_FG="#eceff4"
+DEFAULT_STRIP_CURRENT_BG="blue"
+# NOT a user option, deliberately: the design's configuration surface lists
+# @sidetabs-strip-current-bg with no -fg twin, and inventing one here would put
+# an option in the code that ticket 08's README never documents.
+STRIP_CURRENT_FG="black"
+DEFAULT_STRIP_IDLE_BG="brightblack"
+DEFAULT_STRIP_IDLE_FG="white"
+# The bar's own background, which the LAST pill's arrow points into.
+DEFAULT_STRIP_BG="black"
+# Arrow ink where two neighbouring pills share a background. With the standard
+# powerline colouring (fg = left pill's bg) such an arrow would be invisible —
+# same ink as the surface it sits on — so a same-colour join gets a dark ink
+# instead. U+E0B1 (the thin bar) is the usual answer and is deliberately NOT
+# used: every separator in this strip is the solid U+E0B0.
+DEFAULT_STRIP_SEP_FG="#2e3440"
+# Marker on the CURRENT session's pill, drawn only when that session carries a
+# colour of its own (@sidetabs_sflag). An uncoloured current session already
+# renders in @sidetabs-strip-current-bg, which is what identifies it; a coloured
+# one has given that slot away, so it needs the marker instead. U+258E, spelled
+# as bytes because macOS ships bash 3.2 and $'\uXXXX' is a bash 4.2 feature.
+DEFAULT_STRIP_MARKER=$'\xe2\x96\x8e'

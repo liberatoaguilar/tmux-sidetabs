@@ -145,6 +145,18 @@ recompute_window_locked() {
         return 0
     fi
 
+    # The bottom session strip rolls `attention` up to the session pill, and
+    # agent state is INVISIBLE to tmux's own alert machinery — this file mimics
+    # bell semantics rather than using them (see the bell-semantics block in
+    # mark_pane), so no alert-bell hook ever fires for it and nothing else would
+    # tell the strip to redraw. Only a real ENTRY into or EXIT from attention
+    # matters; a since-only change, or working -> done, cannot alter a pill.
+    if [ "$newstate" != "$oldstate" ]; then
+        case "${oldstate}>${newstate}" in
+            attention\>*|*\>attention) ATTENTION_CHANGED=1 ;;
+        esac
+    fi
+
     if [ -n "$newstate" ]; then
         # `since` FIRST: the two set-options are separate round-trips, and a
         # render tick landing between them must never see a state with no since
@@ -167,9 +179,11 @@ recompute_window_locked() {
 # cache with no reconciliation timer, so a wrong value would simply stay wrong.
 AGENT_LOCK=""
 CHANGED=0
+ATTENTION_CHANGED=0
 recompute_window() {
     local wid="$1" lock held=0 tries=0 rc=0
     CHANGED=0
+    ATTENTION_CHANGED=0
     lock="${TMPDIR:-/tmp}/sidetabs_agent_${SERVER_PID}_${wid//[^a-zA-Z0-9]/_}"
     while [ "$tries" -lt 12 ]; do
         if mkdir "$lock" 2>/dev/null; then held=1; break; fi
@@ -194,6 +208,15 @@ recompute_window() {
         AGENT_LOCK=""
     fi
     if [ "$CHANGED" = "1" ]; then "$CURRENT_DIR/refresh.sh" force || true; fi
+    # Outside the lock, for the same reason the sidebar nudge is: this is a
+    # cross-session sweep and holding a per-window lock across it would
+    # serialize agents that only ever wanted to write one option. `force`
+    # because an attention transition can easily be the last event for minutes
+    # — nothing re-renders the strip on a timer, so a debounced call swallowed
+    # by an unrelated event 50ms earlier would leave the pill wrong until
+    # something else happens. Costs one show-option when the strip is off,
+    # which is the default.
+    if [ "$ATTENTION_CHANGED" = "1" ]; then "$CURRENT_DIR/strip.sh" force || true; fi
     return "$rc"
 }
 
