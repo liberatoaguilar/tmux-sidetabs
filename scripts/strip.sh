@@ -733,10 +733,15 @@ fit_stage() {
 #                          the same colour — the thing the thin chevron exists
 #                          to avoid.
 #                          Ink = $SEP_FG, whose default is the sentinel "match"
-#                          meaning the LEFT PILL'S OWN fg: a white-on-grey
-#                          session pill gets a white-ish chevron, a black-on-cyan
-#                          sysinfo pill a black-ish one. An explicit colour
-#                          overrides it everywhere.
+#                          meaning DERIVED FROM THE PILL ITSELF: that pill's own
+#                          background blended 40% of the way toward its own
+#                          foreground (sep_ink below). A grey session pill gets a
+#                          muted grey chevron, a cyan sysinfo pill a deeper cyan
+#                          one — a shade OF the pill rather than a colour laid on
+#                          top of it. (Copying the pill's fg outright, which is
+#                          what "match" used to mean, puts plain white on every
+#                          grey session pill: stark, and foreign to the pill.) An
+#                          explicit colour overrides it everywhere.
 #   - the LAST pill      : the "right pill" is the bar background itself, and
 #                          the same match/differ test applies to it too.
 # Both glyphs are ONE display column, so the cascade's arithmetic (a join costs
@@ -747,6 +752,61 @@ BATCH=""
 # single-quoted string: close, backslash-escaped quote, reopen.
 SQ="'"
 SQ_ESCAPED="'\\''"
+
+# resolve_hex <colour> -> HEXV, its "#rrggbb" form. Returns 1 for anything that
+# cannot be resolved — a "colour123" index, an unknown name, "default" — because
+# a blend needs numbers and there is nothing to be gained by guessing at them.
+#
+# The literal-hex test also insists on LOWERCASE, which everything reaching here
+# already is: the theme block and the edge-pill scan both run a tr pass, for the
+# reason section 3 documents at length (#D is tmux's pane_id alias, so an
+# uppercase #D08770 corrupts under a second format expansion). An uppercase value
+# that somehow got this far is therefore treated as unresolvable and falls back,
+# rather than being blended into an ink this file would then emit uppercase.
+resolve_hex() {
+    local rest
+    case "$1" in
+        '#'[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) HEXV="$1"; return 0 ;;
+    esac
+    # The space-delimited table from variables.sh. Its leading/trailing spaces
+    # are load-bearing: " black=" cannot match inside " brightblack=", and the
+    # value is cut at the next space.
+    rest="${STRIP_COLOR_NAMES#* $1=}"
+    [ "$rest" = "$STRIP_COLOR_NAMES" ] && return 1
+    HEXV="${rest%% *}"
+    case "$HEXV" in
+        '#'[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0 ;;
+    esac
+    return 1
+}
+
+# sep_ink <pill bg> <pill fg> -> SEP_INK, the ink for a same-background join
+# under the "match" sentinel: the pill's BACKGROUND carried STRIP_SEP_MIX percent
+# of the way toward its own FOREGROUND, per RGB channel. Visible enough to read
+# as a divider, close enough to the pill to belong to it.
+#
+# HOUSE RULE, a failed operation is a no-op: SEP_INK is seeded with the
+# foreground FIRST, so every early return leaves the previous behaviour (the
+# pill's own fg) in place rather than an empty or invalid style value. A colour
+# neither side can resolve therefore degrades to a chevron that is merely stark,
+# never to a broken #[fg=] or a blank separator.
+#
+# Integer arithmetic throughout — bash has no floats — and `printf -v` rather
+# than a $(printf) subshell, because this runs once per join per session string.
+SEP_INK=""
+sep_ink() {
+    local hbg hfg r g b
+    SEP_INK="$2"
+    resolve_hex "$1" || return 0
+    hbg="$HEXV"
+    resolve_hex "$2" || return 0
+    hfg="$HEXV"
+    r=$(( (16#${hbg:1:2} * (100 - STRIP_SEP_MIX) + 16#${hfg:1:2} * STRIP_SEP_MIX) / 100 ))
+    g=$(( (16#${hbg:3:2} * (100 - STRIP_SEP_MIX) + 16#${hfg:3:2} * STRIP_SEP_MIX) / 100 ))
+    b=$(( (16#${hbg:5:2} * (100 - STRIP_SEP_MIX) + 16#${hfg:5:2} * STRIP_SEP_MIX) / 100 ))
+    # %02x is lowercase by definition, which is the whole point (see section 3).
+    printf -v SEP_INK '#%02x%02x%02x' "$r" "$g" "$b"
+}
 
 # append_pill <bg> <fg> <attr> <body> <bodywidth> <next_bg>
 # Appends one "#[style]body" cell plus its trailing separator arrow to the
@@ -763,10 +823,15 @@ append_pill() {
     out="${out}#[fg=${fg},bg=${bg},${attr}]${body}"
     width=$((width + bw))
     if [ "$bg" = "$nbg" ]; then
-        # No colour boundary: thin chevron, and by default in the pill's own
-        # ink so it stays inside that pill's colour family.
+        # No colour boundary: thin chevron, and by default in an ink DERIVED
+        # from this pill's own colours, so it reads as a shade of the pill
+        # rather than as something laid on top of it.
         sep="$SEP_GLYPH"
-        if [ "$SEP_FG" = "match" ]; then sfg="$fg"; else sfg="$SEP_FG"; fi
+        if [ "$SEP_FG" = "match" ]; then
+            sep_ink "$bg" "$fg"; sfg="$SEP_INK"
+        else
+            sfg="$SEP_FG"
+        fi
     else
         sep="$ARROW"
         sfg="$bg"

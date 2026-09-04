@@ -181,9 +181,14 @@ powerline rule:
 - **backgrounds match** — nothing to cut: the thin `` chevron
   (`@sidetabs-strip-sep-glyph`, default U+E0B1) drawn on the shared background.
   Ink is `@sidetabs-strip-sep-fg`, whose default is the **sentinel `match`**,
-  meaning *the left pill's own foreground* — a white-on-grey session pill gets a
-  white-ish chevron, a black-on-cyan sysinfo pill a black-ish one. Any other
-  value is a literal color applied at every same-background join.
+  meaning *derived from that pill*: its own background blended 40% of the way
+  toward its own foreground, per RGB channel. A white-on-grey session pill gets
+  a muted grey chevron, a black-on-cyan sysinfo pill a deeper cyan one — the ink
+  is per pill, so two differently-colored pills in one strip get two different
+  inks. Named tmux colors are resolved to their nord hex first
+  (`variables.sh:STRIP_COLOR_NAMES`); a background that resolves to no hex falls
+  back to the pill's foreground. Any other value of the option is a literal
+  color applied at every same-background join.
 - **last pill**: the "right pill" is the bar background
   (`@sidetabs-strip-bg`, default `black`) and the same match/differ test applies.
 
@@ -411,7 +416,7 @@ half-restoring, per the house rule that a failed operation is a no-op, never a c
 | `@sidetabs-strip-left-N` | *(unset)* | Left pill N (1..16); unset = plugin ignores that side |
 | `@sidetabs-strip-right-N` | *(unset)* | Right pill N (1..16) |
 | `@sidetabs-strip-left-N-bg` / `-fg` | theme | Per-pill colors |
-| `@sidetabs-strip-sep-fg` | `match` | Ink for the thin separator where neighbors share a background; the sentinel `match` = the pill's own fg |
+| `@sidetabs-strip-sep-fg` | `match` | Ink for the thin separator where neighbors share a background; the sentinel `match` = a muted tint of that pill (its bg 40% of the way to its fg) |
 | `@sidetabs-strip-sep-glyph` | `` (U+E0B1) | Glyph for a same-background join; the boundary arrow is fixed |
 | `@sidetabs-strip-current-marker` | `▎` | Marker on a flagged current session |
 | `@sidetabs-strip-current-bg` | `blue` | Current-session pill background |
@@ -438,8 +443,11 @@ pill order matches session-id order; the current pill is highlighted in its *own
 session's string and not in another's; precedence bell > flag > current > idle;
 agent `attention` colors the pill like a bell; a color boundary draws `` and a
 same-background join draws ``, asserted by count so "an arrow somewhere" cannot
-pass; the same-background ink defaults to the pill's own fg and an explicit
-`@sidetabs-strip-sep-fg` overrides it; every cascade stage at forced budgets
+pass; the same-background ink is derived per pill from that pill's own background
+(the expected blend recomputed in the test rather than borrowed from the
+implementation), a grey pill and a cyan pill in one strip getting different inks,
+an unresolvable background falling back to the pill's fg, and an explicit
+`@sidetabs-strip-sep-fg` overriding all of it; every cascade stage at forced budgets
 via a `SIDETABS_STRIP_TEST_WIDTH` override; the `+N` floor; emitted hex is lowercase.
 
 **`tests/flag_restore_smoke.sh`** — store round-trip for both row shapes; clearing a
@@ -516,3 +524,46 @@ ink remains a one-line taste test.
 
 Both glyphs occupy one display column, so nothing in the width cascade changes:
 a join still costs 1.
+
+### …and `match` was revised again
+
+Copying the pill's foreground is right in principle — the ink should come from
+the pill — but wrong in practice for the pills that actually carry the strip.
+The session pills are white on grey, so "the pill's own fg" is plain `white`:
+at chevron weight that is the brightest thing on the bar, and it reads as a mark
+laid *on* the pill rather than as part of it. The same rule on a black-on-cyan
+sysinfo pill gives a black chevron, which is the opposite failure and equally
+foreign.
+
+So `match` now means a **muted tint of the pill**, computed rather than copied:
+the pill's background carried **40% of the way toward its own foreground**, per
+RGB channel, integer arithmetic (bash has no floats, and macOS ships 3.2):
+
+```
+channel = (bg * 60 + fg * 40) / 100      truncated
+```
+
+Grey pill (`brightblack` on `white`) → `#848c9c`, a muted grey. Cyan pill
+(`cyan` on `black`) → `#648896`, a deeper cyan. The current-session pill
+(`blue` on `black`) → `#5f758d`. Each ink is derived from the pill it sits on,
+so one strip carries as many inks as it carries pill colors — which is the whole
+point, and the thing no single configured value can do.
+
+Blending needs numbers, and the strip emits tmux color **names**
+(`brightblack`, `black`, `white`, `cyan`, `blue`). `STRIP_COLOR_NAMES` in
+`variables.sh` resolves them to the same nord values the rest of the plugin uses
+(`DEFAULT_FLAG_COLORS`, the bell red, `@sidetabs-flag-fg`), as a space-delimited
+string table — bash 3.2 has no associative arrays. A color that resolves to no
+hex (a `colour123` index, an unknown name, `default`) has nothing to blend from
+and falls back to the pill's foreground: the house rule is that a failed
+operation is a no-op, so an unresolvable color degrades to the previous
+behavior, never to a blank or invalid `#[fg=]`.
+
+The derived ink is emitted **lowercase**, like every other hex in the file: `#D`
+is tmux's legacy `pane_id` alias, so an uppercase `#848C9C` would expand to
+`<pane_id>48C9C` under a second format expansion.
+
+Unchanged by all of this: the boundary arrow (still solid, still the left pill's
+background, still not configurable), an explicit `@sidetabs-strip-sep-fg` (still
+overrides every same-background join), and the width cascade — both glyphs are
+still one display column, so a join still costs 1.

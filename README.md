@@ -126,7 +126,7 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-strip-bell-bg` | `#bf616a` | Background of a session holding a bell or an agent `attention` (nord11) |
 | `@sidetabs-strip-bell-fg` | `#eceff4` | Text of a bell / attention pill (nord6) |
 | `@sidetabs-strip-bg` | `black` | The bar's own background — what the last pill's arrow points into |
-| `@sidetabs-strip-sep-fg` | `match` | Ink for the thin separator drawn where two neighboring pills share a background. `match` is a sentinel meaning *the pill's own foreground color*, so the separator stays inside that pill's palette; any other value is a literal color used at every such join. Color boundaries are unaffected — their arrow is always the left pill's background |
+| `@sidetabs-strip-sep-fg` | `match` | Ink for the thin separator drawn where two neighboring pills share a background. `match` is a sentinel meaning *derived from that pill* — its own background carried 40% of the way toward its own foreground — so a grey pill gets a muted grey separator and a cyan pill a deeper cyan one, each a shade of the pill it sits on. Any other value is a literal color used at every such join. Color boundaries are unaffected — their arrow is always the left pill's background |
 | `@sidetabs-strip-sep-glyph` | `U+E0B1` | Glyph for a same-background join, the thin powerline chevron. The solid `U+E0B0` arrow drawn at a real color boundary is fixed and has no option |
 | `@sidetabs-strip-current-marker` | `▎` | Marker drawn on the current session's pill — only when that session carries a color of its own, and always at the narrowest cascade stage |
 | `@sidetabs-strip-name-max` | `0` | Hard cap on a session name in the strip, applied before the width cascade starts (`0` = no cap). For short names at *every* width, not only a narrow one |
@@ -191,11 +191,19 @@ Two adjacent pills that **share** a background have no boundary to draw, so the
 separator is a thin chevron (U+E0B1, `@sidetabs-strip-sep-glyph`) on the shared
 background instead. A solid arrow there would either vanish into the surface
 under it or, forced into a contrasting ink, read as a heavy dark wedge between
-two pills that are in fact the same color. The chevron's ink is
-`@sidetabs-strip-sep-fg`, whose default is the sentinel `match`: it takes the
-pill's **own** foreground, so a white-on-grey session pill gets a white-ish
-chevron and a black-on-cyan sysinfo pill a black-ish one, each staying inside
-its own pill's colors. Set the option to a color to override that everywhere.
+two pills that are in fact the same color.
+
+The chevron's ink is `@sidetabs-strip-sep-fg`, whose default is the sentinel
+`match`, meaning **derived from the pill it sits on**: that pill's own
+background, blended 40% of the way toward its own foreground, channel by
+channel. A white-on-grey session pill gets a muted grey chevron; a
+black-on-cyan sysinfo pill gets a deeper cyan one. The ink is therefore
+different for every differently-colored pill in the same strip — visible enough
+to read as a divider, close enough to the pill to belong to it, rather than one
+foreign color laid over all of them. Named colors (`brightblack`, `cyan`, …)
+are resolved to their nord hex first; a background with no hex to resolve to (a
+`colour123` index, an unknown name) falls back to the pill's foreground. Set
+the option to a color to override the derivation everywhere.
 
 Both glyphs are one display column wide, so a join costs the width cascade
 exactly one column whichever of the two it draws.

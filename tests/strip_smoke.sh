@@ -15,7 +15,9 @@
 #   3  each session's string highlights ITSELF, and no other string does
 #   4  the classic powerline rule: solid arrow at a colour boundary, thin
 #      chevron where two adjacent pills share a background
-#   5  the chevron's ink defaults to the pill's own fg, and is overridable
+#   5  the chevron's ink is DERIVED PER PILL from that pill's own background,
+#      falls back to its fg when the background is not resolvable, and is
+#      overridable by an explicit colour
 #   6  a session colour beats "current", and only then is the marker drawn
 #  6b  setting or clearing a colour redraws the strip on its own — no tmux hook
 #      fires on a user-option write, so session_flag_set.sh has to do it
@@ -115,6 +117,38 @@ CUR='#[fg=black,bg=blue,bold]'
 GREEN='#[fg=#2e3440,bg=#a3be8c,bold]'    # palette slot 2, @sidetabs-flag-fg
 BELLP='#[fg=#eceff4,bg=#bf616a,bold]'
 BLUEP='#[fg=#2e3440,bg=#81a1c1,bold]'    # palette slot 3, @sidetabs-flag-fg
+
+# --- the expected same-background ink, computed from first principles --------
+# The chevron's default ink is DERIVED from the pill it sits on: that pill's own
+# background, carried 40% of the way toward its own foreground, per channel.
+#
+# Every value below is written out HERE rather than read from variables.sh, and
+# the blend is reimplemented HERE rather than by calling strip.sh's: a test that
+# borrows the implementation's table and its arithmetic agrees with the
+# implementation about any mistake in either, which is precisely what it is
+# supposed to catch. The nord values are the ones the rest of the plugin uses.
+NORD_BLACK='2e3440'        # nord0  — tmux "black", and @sidetabs-flag-fg
+NORD_BRIGHTBLACK='4c566a'  # nord3  — tmux "brightblack", the idle pill bg
+NORD_WHITE='d8dee9'        # nord4  — tmux "white", the idle pill fg
+NORD_CYAN='88c0d0'         # nord8  — tmux "cyan"
+NORD_YELLOW='ebcb8b'       # nord13 — tmux "yellow"
+# 40% of the way from <bg> to <fg>, per RGB channel, integer-truncated, printed
+# lowercase. Both arguments are bare 6-digit hex, no leading "#".
+blend() {
+    local bg="$1" fg="$2" r g b
+    r=$(( (16#${bg:0:2} * 60 + 16#${fg:0:2} * 40) / 100 ))
+    g=$(( (16#${bg:2:2} * 60 + 16#${fg:2:2} * 40) / 100 ))
+    b=$(( (16#${bg:4:2} * 60 + 16#${fg:4:2} * 40) / 100 ))
+    printf '#%02x%02x%02x' "$r" "$g" "$b"
+}
+# A white-on-grey session pill, and a black-on-cyan edge pill. The literal
+# values are asserted below as well as computed, so a change to the blend has to
+# be a deliberate one rather than something the arithmetic quietly absorbs.
+INK_IDLE="$(blend "$NORD_BRIGHTBLACK" "$NORD_WHITE")"
+INK_CYAN="$(blend "$NORD_CYAN" "$NORD_BLACK")"
+INK_YELLOW="$(blend "$NORD_YELLOW" "$NORD_BLACK")"
+[ "$INK_IDLE" = '#848c9c' ] || fail "the test's own blend is wrong: brightblack/white gave $INK_IDLE"
+[ "$INK_CYAN" = '#648896' ] || fail "the test's own blend is wrong: cyan/black gave $INK_CYAN"
 
 # === setup ==================================================================
 # Session names are chosen so NAME order (alpha, mid, zulu) is the exact
@@ -220,46 +254,121 @@ has "#[fg=brightblack,bg=black,nobold]${ARROW}" "$(sl zulu)" \
     || fail "the last pill does not arrow into @sidetabs-strip-bg: $(sl zulu)"
 pass "the last pill arrows into the bar background"
 
-# === 5. the chevron's ink, and its sentinel default =========================
-# @sidetabs-strip-sep-fg defaults to the sentinel "match": the chevron is drawn
-# in the LEFT PILL'S OWN foreground, so it stays inside that pill's colour
-# family instead of being a foreign wedge sitting on it. mid is idle, so its fg
-# is white and the mid->alpha chevron is white on brightblack.
+# === 5. the chevron's ink, derived per pill =================================
+# @sidetabs-strip-sep-fg defaults to the sentinel "match", which means DERIVED
+# FROM THE PILL: its own background carried 40% of the way toward its own
+# foreground. mid is idle (white on brightblack), so the mid->alpha chevron is
+# that blend — a muted grey — and specifically NOT plain white, which is what
+# copying the pill's fg outright used to give and which reads as a foreign mark
+# laid over the pill rather than part of it.
+#
 # Anchored on the pill itself — "the mid pill is IMMEDIATELY followed by a
-# chevron in white" — rather than on the separator alone, so this cannot be
-# satisfied by some other join that happens to end up brightblack.
-has "${IDLE} mid ${IDLE}${THIN}" "$(sl zulu)" \
-    || fail "the default same-background ink is not the pill's own fg: $(sl zulu)"
+# chevron in the derived ink" — rather than on the separator alone, so this
+# cannot be satisfied by some other join that happens to end up brightblack.
+has "${IDLE} mid #[fg=${INK_IDLE},bg=brightblack,nobold]${THIN}" "$(sl zulu)" \
+    || fail "the same-background ink is not blended from the pill's own bg: $(sl zulu)"
+if has "${IDLE} mid ${IDLE}${THIN}" "$(sl zulu)"; then
+    fail "the chevron is still drawn in the pill's own fg (the old rule): $(sl zulu)"
+fi
 # The differing zulu->mid join keeps the standard powerline colouring: solid
 # arrow, fg = the left pill's bg. That is the look the strip is built around and
 # the same-background rule must not have touched it.
 has "#[fg=blue,bg=brightblack,nobold]${ARROW}" "$(sl zulu)" \
     || fail "a differing-background join did not use the left pill's bg: $(sl zulu)"
-pass "the same-background chevron defaults to the pill's own fg; a boundary is unaffected"
+pass "a same-background chevron is inked with a blend of the pill's own bg; a boundary is unaffected"
 
-# An explicit colour overrides the sentinel for every same-background join —
-# one config line, so the ink can be taste-tested without touching the code.
+# THE INK IS PER PILL, not one value for the whole strip. Two adjacent cyan edge
+# pills alongside the grey session pills: same strip, same generation, two
+# different derived inks — a muted grey on the grey pills and a deeper cyan on
+# the cyan ones. This is the property the sentinel exists for, and a single
+# hardcoded ink (whatever it is) cannot satisfy it.
+tm set-option -g @sidetabs-strip-left-1 'aa'
+tm set-option -g @sidetabs-strip-left-1-bg 'cyan'
+tm set-option -g @sidetabs-strip-left-1-fg 'black'
+tm set-option -g @sidetabs-strip-left-2 'bb'
+tm set-option -g @sidetabs-strip-left-2-bg 'cyan'
+tm set-option -g @sidetabs-strip-left-2-fg 'black'
+strip force
+CYANP='#[fg=black,bg=cyan,nobold]'
+has "${CYANP} aa #[fg=${INK_CYAN},bg=cyan,nobold]${THIN}" "$(sl zulu)" \
+    || fail "the cyan pill's chevron is not a deeper cyan: $(sl zulu)"
+has "${IDLE} mid #[fg=${INK_IDLE},bg=brightblack,nobold]${THIN}" "$(sl zulu)" \
+    || fail "the grey pill's chevron changed when a cyan pill was added: $(sl zulu)"
+[ "$INK_CYAN" != "$INK_IDLE" ] || fail "setup: the two expected inks are not distinct"
+pass "a grey pill and a cyan pill in the SAME strip get different, per-pill inks"
+
+# A background that cannot be resolved to hex — a colour index, an unknown name,
+# a terminal "default" — has nothing to blend from. House rule: that is a
+# fallback, never a blank separator and never a guess. The fallback is the pill's
+# own foreground, which is exactly what the strip drew before this change.
+tm set-option -g @sidetabs-strip-left-1-bg 'colour99'
+tm set-option -g @sidetabs-strip-left-2-bg 'colour99'
+strip force
+has "#[fg=black,bg=colour99,nobold] aa #[fg=black,bg=colour99,nobold]${THIN}" "$(sl zulu)" \
+    || fail "an unresolvable background did not fall back to the pill's fg: $(sl zulu)"
+# ...and it really is THAT PILL'S fg, not a constant that happens to be black:
+# the same unresolvable background with a different foreground follows the
+# foreground.
+tm set-option -g @sidetabs-strip-left-1-fg 'white'
+tm set-option -g @sidetabs-strip-left-2-fg 'white'
+strip force
+has "#[fg=white,bg=colour99,nobold] aa #[fg=white,bg=colour99,nobold]${THIN}" "$(sl zulu)" \
+    || fail "the unresolvable-background fallback is not the pill's own fg: $(sl zulu)"
+tm set-option -g @sidetabs-strip-left-1-fg 'black'
+tm set-option -g @sidetabs-strip-left-2-fg 'black'
+pass "a background with no hex to blend from falls back to the pill's fg, never to nothing"
+tm set-option -g @sidetabs-strip-left-1-bg 'cyan'
+tm set-option -g @sidetabs-strip-left-2-bg 'cyan'
+strip force
+
+# An explicit colour overrides the derivation at EVERY same-background join —
+# one config line, so the ink can be taste-tested without touching the code —
+# and the grey and cyan joins, which derive differently, both take it.
 tm set-option -g @sidetabs-strip-sep-fg '#123456'
 strip force
 has "${IDLE} mid #[fg=#123456,bg=brightblack,nobold]${THIN}" "$(sl zulu)" \
     || fail "an explicit @sidetabs-strip-sep-fg did not override the sentinel: $(sl zulu)"
-if has "${IDLE} mid ${IDLE}${THIN}" "$(sl zulu)"; then
-    fail "the pill's own fg was still used after an explicit ink was configured: $(sl zulu)"
-fi
+has "${CYANP} aa #[fg=#123456,bg=cyan,nobold]${THIN}" "$(sl zulu)" \
+    || fail "the explicit ink reached the grey join but not the cyan one: $(sl zulu)"
+for ink in "$INK_IDLE" "$INK_CYAN"; do
+    if has "fg=${ink}," "$(sl zulu)"; then
+        fail "a derived ink survived an explicit @sidetabs-strip-sep-fg: $(sl zulu)"
+    fi
+done
 # It must not leak into a boundary join, which has no ink to choose.
 has "#[fg=blue,bg=brightblack,nobold]${ARROW}" "$(sl zulu)" \
     || fail "the explicit sep ink leaked into a colour-boundary join: $(sl zulu)"
 tm set-option -gu @sidetabs-strip-sep-fg
 strip force
-has "${IDLE} mid ${IDLE}${THIN}" "$(sl zulu)" \
-    || fail "unsetting @sidetabs-strip-sep-fg did not return to the sentinel: $(sl zulu)"
-pass "@sidetabs-strip-sep-fg overrides the sentinel and applies only to same-background joins"
+has "${IDLE} mid #[fg=${INK_IDLE},bg=brightblack,nobold]${THIN}" "$(sl zulu)" \
+    || fail "unsetting @sidetabs-strip-sep-fg did not return to the derivation: $(sl zulu)"
+pass "@sidetabs-strip-sep-fg overrides every derived ink and applies only to same-background joins"
+
+# The derived ink is emitted LOWERCASE, like every other hex in the strip: #D is
+# tmux's legacy pane_id alias, so an uppercase #848C9C would expand to
+# "<pane_id>48C9C" the moment the string is expanded a second time. Section 10
+# scans the whole strip for the same violation; this pins the derived ink
+# specifically, since it is the one hex value the generator computes itself.
+# [[:upper:]], not [A-F]: a bracket RANGE is collation-ordered, so in this
+# locale [A-F] matches "b" as happily as "B" and the check would fire on every
+# lowercase hex digit. A named class cannot be fooled that way.
+case "$INK_IDLE$INK_CYAN" in
+    *[[:upper:]]*) fail "the test's own expectation is uppercase: $INK_IDLE $INK_CYAN" ;;
+esac
+bad="$(sl zulu | grep -oE '#[0-9a-fA-F]{6}' | grep -E '[A-F]' || true)"
+[ -z "$bad" ] || fail "the derived separator ink was emitted uppercase: $bad"
+pass "the derived ink is lowercase hex, so it cannot collide with a #D-style format alias"
+
+for o in left-1 left-1-bg left-1-fg left-2 left-2-bg left-2-fg; do
+    tm set-option -gu "@sidetabs-strip-${o}"
+done
+strip force
 
 # The same-background GLYPH is configurable too; the boundary arrow is not, and
 # deliberately has no option at all.
 tm set-option -g @sidetabs-strip-sep-glyph ':'
 strip force
-has "#[fg=white,bg=brightblack,nobold]:" "$(sl zulu)" \
+has "#[fg=${INK_IDLE},bg=brightblack,nobold]:" "$(sl zulu)" \
     || fail "@sidetabs-strip-sep-glyph is not configurable: $(sl zulu)"
 if has "$THIN" "$(sl zulu)"; then fail "the default chevron survived an explicit glyph: $(sl zulu)"; fi
 has "#[fg=blue,bg=brightblack,nobold]${ARROW}" "$(sl zulu)" \
@@ -633,12 +742,13 @@ pass "right pills form their own status-right, individually coloured, joined the
 # the shape the strip is actually used in: several sysinfo pills all sharing one
 # colour, where a solid arrow at every join draws a row of heavy wedges between
 # pills that are the same colour. Both pills black-on-yellow, so the join is a
-# thin chevron in the left pill's own fg (black), and no arrow at all.
+# thin chevron inked from the pill itself — yellow blended toward black, a
+# deeper yellow — and no arrow at all.
 tm set-option -g @sidetabs-strip-right-2-bg 'yellow'
 tm set-option -g @sidetabs-strip-right-2-fg 'black'
 strip force
 rgt="$(tm show-option -t zulu -qv status-right)"
-has "#[fg=black,bg=yellow,nobold]${THIN}" "$rgt" \
+has "#[fg=${INK_YELLOW},bg=yellow,nobold]${THIN}" "$rgt" \
     || fail "two same-coloured edge pills did not get the thin chevron: $rgt"
 if has "bg=yellow,nobold]${ARROW}" "$rgt"; then
     fail "a same-background edge-pill join still drew the solid arrow: $rgt"

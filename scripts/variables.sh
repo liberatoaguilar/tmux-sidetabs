@@ -251,12 +251,41 @@ DEFAULT_STRIP_BG="black"
 #                           pills that are actually the same colour.
 #
 # @sidetabs-strip-sep-fg is the chevron's ink. The default is the SENTINEL
-# "match", meaning "use the left pill's own foreground colour" — so a grey idle
-# pill gets a white-ish chevron and a black-on-cyan sysinfo pill a black-ish
-# one, each staying inside its own pill's colour family. Any other value is a
-# literal colour and overrides that for every same-background join, which is
+# "match", meaning "derive it from the pill itself": the pill's own background
+# blended STRIP_SEP_MIX percent of the way toward its own foreground. A grey
+# idle pill therefore gets a muted grey chevron and a black-on-cyan sysinfo pill
+# a deeper cyan one — each a shade OF the pill it sits on rather than a foreign
+# colour laid over it. (The sentinel used to mean "copy the pill's fg", which on
+# a white-on-grey session pill is plain white: stark, and reading as something
+# put on top of the pill rather than part of it.) Any other value is a literal
+# colour and overrides the derivation at every same-background join, which is
 # what makes a one-line taste test possible.
 DEFAULT_STRIP_SEP_FG="match"
+# How far from the pill's background toward its foreground the derived ink sits,
+# in percent. 40 is the point where the chevron is unmistakably a divider and
+# still unmistakably part of the pill. NOT a user option: the configuration
+# surface already has @sidetabs-strip-sep-fg for anyone who wants a different
+# ink, and a second knob for the same decision would only be a way to get it
+# subtly wrong. Integer maths only (bash has no floats):
+#
+#   channel = (bg * (100 - mix) + fg * mix) / 100      truncated
+#
+STRIP_SEP_MIX="40"
+# Named tmux colours resolved to hex, because a blend needs NUMBERS and the
+# strip emits names: "brightblack"/"white" for an idle pill, "blue"/"black" for
+# the current one, "black" for the bar. The values are the nord palette the rest
+# of this file already uses (DEFAULT_FLAG_COLORS, the bell red, the flag fg), so
+# a derived chevron lands in the same colour space as everything around it.
+#
+# A SPACE-DELIMITED string table, not an associative array: macOS ships bash 3.2
+# and has none. Both delimiters matter — the leading and trailing spaces are
+# what make a lookup for " black=" unable to match inside " brightblack=", and
+# what let the value be cut at the next space.
+#
+# A colour that is NOT in here (a "colour123" index, an unknown name, a terminal
+# "default") is simply not resolvable, and the caller falls back to the pill's
+# own foreground rather than guessing at a blend or emitting something invalid.
+STRIP_COLOR_NAMES=" black=#2e3440 red=#bf616a green=#a3be8c yellow=#ebcb8b blue=#81a1c1 magenta=#b48ead cyan=#88c0d0 white=#d8dee9 brightblack=#4c566a brightred=#bf616a brightgreen=#a3be8c brightyellow=#ebcb8b brightblue=#5e81ac brightmagenta=#b48ead brightcyan=#8fbcbb brightwhite=#eceff4 "
 # The glyph for a same-background join. U+E0B1, the thin powerline chevron —
 # the same one sysinfo.sh joins its own measurements with, and one display
 # column wide exactly like U+E0B0, so the width cascade's arithmetic (a join
