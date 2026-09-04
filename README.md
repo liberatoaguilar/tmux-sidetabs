@@ -243,6 +243,22 @@ any width and always names where you are.
 The budget is the width of the **narrowest client attached to that session**,
 minus whatever is reserved for a `status-right` the plugin does not own.
 
+The plugin also sets tmux's own length caps per session, and **neither is set to
+the budget** — both are deliberately tighter:
+
+- **`status-left-length`** is set to `budget − reserve − the plugin's own right
+  chain`, i.e. exactly the columns the cascade just fitted the left side into.
+  It can never clip content the cascade decided to keep (it is never smaller than
+  the string), and being no larger makes tmux's own cap a **hard backstop**: if
+  one of *your* `#(shell)` edge pills renders wider than the 12 columns guessed
+  for it, tmux cuts our pill rather than letting it run over your clock. tmux's
+  default here is `10`, which would cut the strip off after the first pill, so
+  something has to be set — this is the tightest correct value.
+- **`status-right-length`** is set to the measured width of the plugin's own
+  right chain, not to the budget, for the same reason. It is written **only when
+  the plugin owns that side** (`@sidetabs-strip-right-1` set); a side you own is
+  never given a length any more than it is given content.
+
 ### Handing over `status-right`
 
 The plugin always owns `status-left`. It owns `status-right` **only when

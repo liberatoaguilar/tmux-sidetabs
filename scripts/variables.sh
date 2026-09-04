@@ -21,6 +21,31 @@ TIMER_RESTORED_OPTION="@sidetabs_timer_restored"
 # think the generation is already seeded.
 FLAG_RESTORED_OPTION="@sidetabs_flag_restored"
 
+# Global flag held for the DURATION of a flag restore (flag_restore.sh, both
+# delivery paths). flag_store.sh stands down while it is "1", because the store
+# is a whole-state SNAPSHOT: a sync landing between "the windows exist" and
+# "their flags have been re-seeded" would record every one of them as
+# legitimately unflagged and DELETE the very rows the replay was about to use.
+# window-renamed[1] and session-renamed[1] both fire flag_store.sh sync, and
+# either can land in that gap, so the gap has to be closed rather than hoped
+# past.
+#
+# WHY THIS IS NOT @sidetabs_restoring. The resurrect path is already covered by
+# that one (resurrect_pre.sh raises it before the restore and resurrect_post.sh
+# drops it after), but it means MORE than "a flag replay is in flight":
+# create_sidebar.sh also stands down while it is set, so raising it around the
+# client-attached `boot` restore — which runs on an ordinary, fully-live server
+# that continuum declined to restore into — would silently stop sidebars being
+# created for the duration. One flag per meaning: this one says only "do not
+# snapshot the flag store right now", and it is the one flag_store.sh checks
+# alongside @sidetabs_restoring.
+#
+# flag_restore.sh clears it from a trap, so a failure, a `set -e` abort or a
+# signal cannot leak it: a leaked "1" would leave write-through disabled for the
+# rest of the server's life, and every flag set from then on would be lost at
+# the next restart — the exact data loss this guard exists to prevent.
+FLAG_RESTORING_OPTION="@sidetabs_flag_restoring"
+
 # Per-session user options
 # The session's own colour. SAME encoding as FLAG_OPTION below (a 1-based index
 # into @sidetabs-flag-colors, unset = none) and the SAME palette — sessions

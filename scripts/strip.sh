@@ -832,7 +832,10 @@ build_one() {
     # at least one session (guarded above), so PBG[1] always exists.
     #
     # ST_LDROP of them have been sacrificed by cascade stage 3, outermost
-    # (leftmost) first, so this starts at ST_LDROP+1 rather than at 1.
+    # (leftmost) first, so this starts at ST_LDROP+1 rather than at 1. Reaching
+    # the floor (stage 7) means stage 3 ran to completion, so ST_LDROP == LEFT_N
+    # and this loop does not run at all there — the floor's pill is always the
+    # first thing in the string, and its own neighbour arithmetic is build_floor's.
     #
     # A pill's VALUE is NOT escaped the way a session name is: a session name
     # is literal text a stray "#" would corrupt, but a pill's value IS tmux
@@ -843,11 +846,6 @@ build_one() {
         body=" ${LEFT_VAL[$k]} "
         if [ "$k" -lt "$LEFT_N" ]; then
             nbg="${LEFT_BG[$((k + 1))]}"
-        elif [ "$ST_FLOOR" = "1" ]; then
-            # Unreachable as the ladder stands (stage 3 has dropped every left
-            # pill by the time stage 7 is reached, so this loop does not run at
-            # the floor), but the join has to be right if the order ever moves.
-            nbg="${PBG[$v]}"
         else
             nbg="${PBG[1]}"
         fi

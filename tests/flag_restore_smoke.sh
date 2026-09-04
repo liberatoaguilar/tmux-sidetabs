@@ -13,8 +13,11 @@
 #   2  after a restart, flagged windows regain their colour by session+window
 #      name (ids do not survive)
 #   3  a live flag is never clobbered
-#   4  the `boot` fallback: once per generation, only on a young server, and
-#      standing down while a restore is in flight
+#   4  the `boot` fallback: once per generation, only on a young server,
+#      standing down while a restore is in flight, and holding a write-through
+#      guard of its own (@sidetabs_flag_restoring) so a sync landing mid-replay
+#      cannot delete the very rows it is about to read — released from a trap,
+#      so it cannot leak and disable write-through for good
 #   5  clearing removes the record, so a cleared window comes back uncoloured
 #   6  a row naming a window that no longer exists is ignored, never misapplied
 #   7  a name containing escape-like characters (a literal backslash-t) still
@@ -436,6 +439,62 @@ sleep 0.5
 [ "$(winopt "$wbt" @sidetabs_flag)" = "4" ] || fail "boot mode did not seed bootwin"
 [ "$(gopt @sidetabs_flag_restored)" = "1" ] || fail "boot mode did not claim the generation flag"
 pass "boot mode seeds a young server and claims the generation"
+
+# --- the boot restore holds the write-through guard --------------------------
+# THE DATA-LOSS CASE. flag_store.sh's sync is a whole-state SNAPSHOT, so a sync
+# that runs while a restore is mid-flight sees every not-yet-seeded window as
+# legitimately unflagged and DELETES its row — wiping the durable record the
+# restore was about to read. The resurrect path is covered by
+# @sidetabs_restoring (section 9); the `boot` path is not, because continuum
+# declining to auto-restore means nothing ever raises that flag, so `boot` holds
+# @sidetabs_flag_restoring instead. window-renamed[1] and session-renamed[1] both
+# fire a sync, so a rename anywhere on the server during a boot restore is all
+# it takes.
+#
+# The race is milliseconds wide in reality, so the seam SIDETABS_FLAG_RESTORE_-
+# TEST_DELAY_S holds the replay open and the sync is landed squarely inside it.
+# Without the guard the store is emptied of every live window's row here, and
+# bootwin comes back uncoloured — the restore reads the store AFTER the sync
+# deleted it.
+tmux -L "$SOCKET" set -g @sidetabs_flag_restored 0
+tmux -L "$SOCKET" set -w -t "$wbt" -u @sidetabs_flag
+tmux -L "$SOCKET" run-shell -b \
+    "SIDETABS_FLAG_RESTORE_TEST_DELAY_S=3 '$PLUGIN_DIR/scripts/flag_restore.sh' boot"
+sleep 1
+# The guard is a tmux option precisely so ANOTHER process can see it; asserting
+# it from here is asserting exactly what flag_store.sh reads.
+[ "$(gopt @sidetabs_flag_restoring)" = "1" ] \
+    || fail "the boot restore did not raise @sidetabs_flag_restoring while replaying"
+run "$PLUGIN_DIR/scripts/flag_store.sh sync"
+sleep 0.5
+[ "$(storerow main bootwin)" = "4" ] \
+    || fail "a sync during a BOOT restore deleted the row the restore was about to replay"
+[ "$(storerow main alpha)" = "1" ] || fail "a sync during a boot restore rewrote the store"
+[ "$(storerow main "")" = "2" ] \
+    || fail "a sync during a boot restore dropped a live session's colour row"
+pass "a sync is a no-op while a BOOT restore is in flight"
+
+# ...and the replay still lands, from a store the sync left alone.
+sleep 3
+[ "$(winopt "$wbt" @sidetabs_flag)" = "4" ] \
+    || fail "the boot restore did not seed bootwin after a sync landed mid-flight"
+# A leaked guard would stay "1" for the rest of the server's life and silently
+# disable EVERY write-through from then on, which is worse than the bug it
+# guards. flag_restore.sh releases it from a trap, so this holds on the failure
+# paths too.
+[ "$(gopt @sidetabs_flag_restoring)" = "0" ] \
+    || fail "the boot restore leaked @sidetabs_flag_restoring: '$(gopt @sidetabs_flag_restoring)'"
+pass "the guard is released when the restore finishes, so write-through resumes"
+
+# Proof the release is real and not just "the option looks clear": a set after
+# the restore must reach the store again.
+run "$PLUGIN_DIR/scripts/flag_set.sh $wbt 5"
+sleep 0.5
+[ "$(storerow main bootwin)" = "5" ] || fail "write-through did not resume after the boot restore"
+run "$PLUGIN_DIR/scripts/flag_set.sh $wbt 4"
+sleep 0.5
+[ "$(storerow main bootwin)" = "4" ] || fail "could not put bootwin's row back to 4"
+pass "write-through works again once the boot restore has finished"
 
 # The resurrect path never stands down for the fallback: losing that race (a
 # client attaching before continuum restores) would leave every flag unseeded.

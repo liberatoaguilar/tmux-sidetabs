@@ -16,6 +16,8 @@
 #   4  every separator is the solid arrow; the thin bar is never drawn
 #   5  a same-background join uses the contrast ink; a differing one does not
 #   6  a session colour beats "current", and only then is the marker drawn
+#  6b  setting or clearing a colour redraws the strip on its own — no tmux hook
+#      fires on a user-option write, so session_flag_set.sh has to do it
 #   7  agent attention beats a session colour, and clearing it restores the pill
 #   8  a bell beats a session colour, and the alert-bell hook delivers it
 #   9  no #{S:}, no @strip_next, no per-client conditional survives into output
@@ -237,6 +239,32 @@ has "${GREEN} zulu " "$(sl mid)" \
 if has "$MARKER" "$(sl mid)"; then fail "mid's string drew a marker on a session that is not mid"; fi
 if has 'bg=blue' "$(sl zulu)"; then fail "the session colour did not beat the current-session colour"; fi
 pass "a session colour beats 'current', and the marker appears only on the coloured current pill"
+
+# === 6b. setting or clearing a colour redraws the strip BY ITSELF ============
+# Note what is missing from this section: a `strip force`. Section 6 calls one
+# explicitly, which is right for what it asserts (the colour RESOLUTION) but
+# would hide this: tmux fires NO hook on a user-option write, so nothing in the
+# hook table can notice @sidetabs_sflag changing. Unless session_flag_set.sh
+# regenerates the strip itself, the pill keeps its old colour until some
+# unrelated event — a resize, a new session — happens to fire, which can be
+# minutes later or never. Read from mid's string, where alpha is an ordinary
+# non-current pill, so this is about the colour and not about the marker.
+before="$(sl mid)"
+has "${IDLE} alpha " "$before" || fail "setup: alpha should be idle in mid's string: $before"
+tm run-shell "$PLUGIN_DIR/scripts/session_flag_set.sh $(appane alpha) 3"
+has "${BLUEP} alpha " "$(sl mid)" \
+    || fail "setting a session colour did not redraw the strip: $(sl mid)"
+if has "${IDLE} alpha " "$(sl mid)"; then fail "alpha's pill kept its idle colour after a set"; fi
+pass "setting a session colour recolours the strip pill immediately"
+
+tm run-shell "$PLUGIN_DIR/scripts/session_flag_set.sh $(appane alpha) none"
+has "${IDLE} alpha " "$(sl mid)" \
+    || fail "clearing a session colour did not redraw the strip: $(sl mid)"
+if has "${BLUEP} alpha " "$(sl mid)"; then fail "alpha's pill kept its colour after a clear"; fi
+# Back to exactly the state section 6 left behind, so section 7 starts where it
+# expects to: zulu green, mid and alpha uncoloured.
+[ "$(sl mid)" = "$before" ] || fail "6b did not leave the strip as it found it: $(sl mid)"
+pass "clearing a session colour returns the strip pill to idle immediately"
 
 # === 7. agent attention beats the colour, and clearing restores the pill ====
 tm run-shell "$PLUGIN_DIR/scripts/session_flag_set.sh $(appane mid) 2"

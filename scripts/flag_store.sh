@@ -176,7 +176,19 @@ flag_store_sync() {
     # snapshot would wipe the very record the restore is about to replay. So
     # while a restore is in flight this is a no-op; the restore's own hook path
     # brings state back, and the next real flag change re-snapshots.
+    #
+    # TWO flags, because there are two ways in and they do not overlap:
+    #   @sidetabs_restoring       a tmux-resurrect restore is in flight (held by
+    #                             resurrect_pre.sh across the whole restore).
+    #   @sidetabs_flag_restoring  flag_restore.sh's own replay is in flight. It
+    #                             covers the client-attached `boot` path, which
+    #                             runs when continuum declines to auto-restore
+    #                             and so never raises @sidetabs_restoring at
+    #                             all — leaving exactly the same gap, on the
+    #                             path that is hardest to notice going wrong.
+    # Either one means "the live state is mid-replay and is not the truth yet".
     [ "$(get_tmux_option "$RESTORING_OPTION" '0')" = "1" ] && return 0
+    [ "$(get_tmux_option "$FLAG_RESTORING_OPTION" '0')" = "1" ] && return 0
     f="$(store_path)"
     mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
     lockd="${f}.lock"

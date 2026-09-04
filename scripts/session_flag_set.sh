@@ -70,6 +70,17 @@ esac
 # failed: the live change above already happened.
 "$CURRENT_DIR/flag_store.sh" sync || true
 
+# Redraw the bottom session strip, whose pill for this session is coloured by
+# exactly the option just written. NOTHING else will do it: tmux fires no hook
+# on a user-option write, so every strip hook (session-created/-closed/-renamed,
+# alert-bell, client-resized, …) is about some other event entirely — without
+# this line the pill keeps its old colour until one of those happens to fire,
+# which can be minutes later or not at all. `force`, because a deliberate
+# keypress must never be swallowed by the 100ms debounce; `|| true` because the
+# strip is off by default and a strip failure must not make a keypress that
+# already changed live state look like it failed.
+"$CURRENT_DIR/strip.sh" force || true
+
 # `force` because the tint lands in the sidebar HEADER of every window of this
 # session, and most of those sidebars are hidden — a hidden sidebar rebuilds
 # only on this signal, so a debounced refresh could leave the old header colour

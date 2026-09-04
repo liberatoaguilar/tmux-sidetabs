@@ -136,7 +136,9 @@ restore_batch=""
 # Bookkeeping globals the plugin writes on its own behalf. None of these is user
 # state: they are debounce stamps and once-per-server-generation claims, and a
 # leftover @sidetabs_restoring="1" would make a REINSTALL in the same server
-# stand down from creating sidebars. User state — window flags, timers, notes,
+# stand down from creating sidebars (and a leftover @sidetabs_flag_restoring="1"
+# would make it stand down from writing flag colours through to their store).
+# User state — window flags, timers, notes,
 # session colours — is deliberately left alone: it is the user's data, it has
 # durable stores of its own, and an uninstall is not a delete.
 for gopt in \
@@ -144,7 +146,8 @@ for gopt in \
     "$LAST_REFRESH_OPTION" \
     "$RESTORING_OPTION" \
     "$TIMER_RESTORED_OPTION" \
-    "$FLAG_RESTORED_OPTION"
+    "$FLAG_RESTORED_OPTION" \
+    "$FLAG_RESTORING_OPTION"
 do
     restore_batch="${restore_batch}set-option -gqu ${gopt}
 "
