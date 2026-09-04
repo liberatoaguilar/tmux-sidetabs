@@ -896,8 +896,9 @@ build_floor() {
         bw=$((2 + ${#name} + ${#suffix} + 1))
     fi
     esc="${name//#/##}"
+    # Same pill-coloured marker as the normal path above, for the same reason.
     append_pill "${PBG[$v]}" "${PFG[$v]}" "${PATTR[$v]}" \
-        "${MARKER} ${esc}${suffix} " "$bw" "$STRIP_BG"
+        "#[fg=${PBG[$v]}]${MARKER}#[fg=${PFG[$v]}] ${esc}${suffix} " "$bw" "$STRIP_BG"
 }
 
 build_one() {
@@ -989,7 +990,16 @@ build_one() {
                 # status-left-length at all. Same convention render.sh uses.
                 width_add=$((len + 2))
                 if [ "$k" = "$v" ] && [ "$ST_MARK" = "1" ]; then
-                    body="${MARKER}${body}"
+                    # The marker is drawn in the pill's OWN BACKGROUND, so it
+                    # disappears into the pill. Both earlier inks were rejected on
+                    # sight: the pill's text colour (near-black) read as a dark
+                    # notch cut out of the pill, and a muted tint of it still read
+                    # as a line. The colour already says "you are here"; the marker
+                    # only holds its column. A bare #[fg=] overrides just the
+                    # foreground, so bg and bold carry on from the style
+                    # append_pill emitted, and the name is put back on the pill's
+                    # real fg straight after.
+                    body="#[fg=${bg}]${MARKER}#[fg=${fg}]${body}"
                     width_add=$((width_add + 1))
                 fi
             fi

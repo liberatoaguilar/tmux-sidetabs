@@ -397,8 +397,17 @@ pass "no marker is drawn while no session is coloured"
 
 tm run-shell "$PLUGIN_DIR/scripts/session_flag_set.sh $(appane zulu) 2"
 strip force
-has "${GREEN}${MARKER} zulu " "$(sl zulu)" \
-    || fail "a coloured CURRENT session should be its colour plus the marker: $(sl zulu)"
+# The marker is drawn in the pill's OWN BACKGROUND so it disappears into the
+# pill — the colour is what says "you are here", and both a near-black marker
+# and a muted tint of the pill were rejected on sight. It still holds its
+# column, so the assertion is on the emitted shape, not on visibility.
+has "${GREEN}#[fg=#a3be8c]${MARKER}#[fg=#2e3440] zulu " "$(sl zulu)" \
+    || fail "a coloured CURRENT session should be its colour plus a pill-coloured marker: $(sl zulu)"
+# ...and the marker must never be drawn in the pill's TEXT colour, which is the
+# dark notch that was rejected.
+if has "#[fg=#2e3440]${MARKER}" "$(sl zulu)"; then
+    fail "the marker was drawn in the pill's text colour, not its background"
+fi
 has "${GREEN} zulu " "$(sl mid)" \
     || fail "a coloured non-current session should be its colour: $(sl mid)"
 if has "$MARKER" "$(sl mid)"; then fail "mid's string drew a marker on a session that is not mid"; fi
@@ -620,7 +629,9 @@ has " a##b'c\$d " "$(sl zulu)" \
 # At 35 everything fits and the marker stays. Counting the escape instead would
 # make it 36, so the cascade would drop the marker to get under the budget.
 stripw 35
-has "${MARKER} zulu " "$(sl zulu)" \
+# Asserted through pills(), which strips styles: the marker now carries its own
+# #[fg=] so it is no longer adjacent to the name in the raw string.
+has "${MARKER} zulu " "$(pills zulu)" \
     || fail "at a 35-column budget the escaped name was counted as escaped, not as displayed: $(pills zulu)"
 stripw 34
 if has "$MARKER" "$(sl zulu)"; then
