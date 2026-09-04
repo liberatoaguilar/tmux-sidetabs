@@ -155,28 +155,11 @@ window_key() {
     SNAME="${SNAME//$TAB/ }"; WNAME="${WNAME//$TAB/ }"
 }
 
-# Serialize the read-modify-write below. Without it two note.sh runs for
-# DIFFERENT windows (two clients pressing the key at once, or a loop tagging
-# several windows) can both read the store before either writes back, and the
-# second mv silently drops the first one's row — the live window option survives
-# but the durable record used by `note.sh restore` does not. mkdir is the atomic
-# primitive available everywhere (macOS has no flock(1)); timer.sh's lock_win
-# uses the same pattern. Best-effort in both directions: after ~1s we assume the
-# holder died mid-write, break the lock and proceed, because losing a row to a
-# rare race still beats hanging a keypress or refusing to save the note.
-store_lock() {
-    local d="$1" i=0
-    while ! mkdir "$d" 2>/dev/null; do
-        i=$((i + 1))
-        if [ "$i" -ge 20 ]; then
-            rmdir "$d" 2>/dev/null || return 1
-            mkdir "$d" 2>/dev/null || return 1
-            return 0
-        fi
-        sleep 0.05
-    done
-    return 0
-}
+# store_lock / store_unlock (mkdir as mutex — macOS has no flock(1), and the
+# durable record used by `note.sh restore` would otherwise lose a row when two
+# writers race) now live in helpers.sh, sourced above, so a second durable
+# store can reuse them instead of carrying its own copy. See there for the
+# mkdir-as-mutex mechanics and the stale-lock force-break timeout.
 
 # Rewrite the store without the (session, window) key, optionally appending a
 # new row. Temp file + mv so a reader never sees a half-written store; the lock
@@ -191,7 +174,7 @@ store_write() {
     lockd="${f}.lock"
     store_lock "$lockd" && held=1
     store_rewrite "$f" "$@"
-    [ "$held" = "1" ] && rmdir "$lockd" 2>/dev/null
+    [ "$held" = "1" ] && store_unlock "$lockd"
     return 0
 }
 
