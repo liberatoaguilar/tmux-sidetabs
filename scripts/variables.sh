@@ -21,6 +21,12 @@ TIMER_RESTORED_OPTION="@sidetabs_timer_restored"
 # think the generation is already seeded.
 FLAG_RESTORED_OPTION="@sidetabs_flag_restored"
 
+# ...and for NOTES (`note.sh restore`), again a flag of its own so the three
+# restores stay independent. There is no guard to go with it of the kind the
+# flag restore needs below: a note sync never removes the row of a window that
+# merely has no note yet, so a sync landing mid-restore cannot hurt the store.
+NOTE_RESTORED_OPTION="@sidetabs_note_restored"
+
 # Global flag held for the DURATION of a flag restore (flag_restore.sh, both
 # delivery paths). flag_store.sh stands down while it is "1", because the store
 # is a whole-state SNAPSHOT: a sync landing between "the windows exist" and
@@ -180,8 +186,11 @@ DEFAULT_FLAG_RESTORE="on"      # re-seed flag colours from the store after a res
 
 # Notes. Unlike flags/timers the note text is durable on its own: every set/clear
 # writes through to a TSV store keyed by (session name, window name), which
-# note.sh restore replays after a server restart. The row glyph is presence-only
-# — the text itself is never interpolated into a render format.
+# note.sh restore replays after a server restart. The key follows the window:
+# a window or session rename re-files the row (`note.sh sync`, on the same
+# rename hooks the flag store uses), so a note id has one row, under its
+# window's current name. The row glyph is presence-only — the text itself is
+# never interpolated into a render format.
 #
 # The option and the store hold a note ID; the TEXT lives in its own file under
 # "${store}.d/<id>". That indirection is what makes a note UNBOUNDED: tmux

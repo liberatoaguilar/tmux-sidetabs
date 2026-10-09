@@ -25,6 +25,14 @@ register_hooks() {
     # back if the window is ever renamed back.
     tmux set-hook -g 'window-renamed[1]' \
         "run-shell -b '$SCRIPTS_DIR/flag_store.sh sync'"
+    # The note index is filed under the same (session, window name) key, so a
+    # rename has to re-file it too. NOT the flag store's policy, though: a flag
+    # keeps its old-name row, a note does not. A note id names one file, and a
+    # second row left under the old name is a second window that can be handed
+    # the same note after a restart — and, once the note is cleared, a row
+    # pointing at a file that no longer exists.
+    tmux set-hook -g 'window-renamed[2]' \
+        "run-shell -b '$SCRIPTS_DIR/note.sh sync'"
     # --- bottom session strip (@sidetabs-session-strip, default off) ---------
     # Registered HERE, in the plugin, rather than typed into a conf — that is
     # the fix for the reported bug. The strip this replaces kept its
@@ -52,6 +60,10 @@ register_hooks() {
     # what brings the colour back if the session is ever renamed back.
     tmux set-hook -g 'session-renamed[1]' \
         "run-shell -b '$SCRIPTS_DIR/flag_store.sh sync'"
+    # ...and the session name is half of every note's key as well, so a session
+    # rename re-files the note row of every window in it.
+    tmux set-hook -g 'session-renamed[2]' \
+        "run-shell -b '$SCRIPTS_DIR/note.sh sync'"
     # A bell is one of the two things that can recolour a pill. Note this is a
     # real hook on the ALERT, not a poll of #{session_bell_flag} — that format
     # is broken on tmux 3.6b and always reports 0 (see strip.sh).
@@ -96,6 +108,13 @@ register_hooks() {
     # seeding on a LATER attach would paint a freshly created window with a
     # long-gone same-named window's colour.
     tmux set-hook -g 'client-attached[3]'        "run-shell -b '$SCRIPTS_DIR/flag_restore.sh boot'"
+    # ...and for notes, which had no fallback at all: when the resurrect hook
+    # did not fire, no note was re-attached for that whole server generation,
+    # and every noted window looked as if its note had been deleted. Own
+    # generation flag (@sidetabs_note_restored), same age gate — a later attach
+    # must not hand a freshly created window a long-gone namesake's note.
+    # (Index 5: slot 4 is the strip's, just below.)
+    tmux set-hook -g 'client-attached[5]'        "run-shell -b '$SCRIPTS_DIR/note.sh restore boot'"
     # Strip regeneration on the client transitions. A client attaching to, or
     # switching to, a session needs that session's own status-left to exist —
     # each string highlights ITS session as the current one, which is what lets
