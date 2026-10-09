@@ -138,7 +138,7 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-timer-restore` | `on` | `off` to disable re-seeding timers from the event log — both after a tmux-resurrect restore and via the boot-time `client-attached` fallback |
 | `@sidetabs-note-key` | `M-n` | Key to open the note editor popup for the current window (`none` to disable) |
 | `@sidetabs-note-icon` | (sticky note) | Glyph shown on rows that have a note. Any string works — set it to something ASCII if your font lacks Nerd Font glyphs. A multi-character icon is measured and takes its columns from the window name, so a long one leaves less room for the name |
-| `@sidetabs-note-store` | `~/.local/share/tmux-sidetabs/notes.tsv` | Path to the durable note index (TSV: session, window name, note id — one row per noted window). Note **text** lives one file per note in `<store>.d/`, so notes have no length limit |
+| `@sidetabs-note-store` | `~/.local/share/tmux-sidetabs/notes.tsv` | Path to the durable note index (TSV: session, window name, note id — one row per note, re-filed under the window's current name whenever the window or its session is renamed; rows for windows that are not open are kept for their return). Note **text** lives one file per note in `<store>.d/`, so notes have no length limit |
 | `@sidetabs-agent-status` | `on` | `off` stops any new agent signal being raised **and** hides any that is already showing (see [Agent status](#agent-status)) — the agent-side hooks can stay installed, they just stop costing anything. Flipping it off mid-turn is safe: a row that was lit at the time goes quiet immediately, and visiting the tab still clears the stored state |
 | `@sidetabs-agent-done-fg` | `#a3be8c` | Color of the ✓ glyph on a finished agent's row (nord14) |
 | `@sidetabs-timer-log` | `~/.local/share/tmux-sidetabs/timelog.tsv` | Path to the timer event log (TSV v3: timestamp, event type, interval start, interval duration, total, session, window, window_id, cwd, tag; events are `start` / `resume` / `pause` / `auto-pause` / `auto-resume` / `adjust` / `cancel` / `reset` / `restore`. `tag` is the window's `@sidetabs_timer_tag` at write time, or `-` when untagged; readers also accept older 9-col (v2, no tag) and legacy 6-col rows) |
@@ -567,7 +567,9 @@ clock while installed.
   `display-message` instead of being swallowed. Flag colors use the same
   fallback on the next `client-attached` slot, with their own generation flag
   (`@sidetabs_flag_restored`) so disabling one restore cannot make the other
-  think the generation is already seeded.
+  think the generation is already seeded. Notes use it as well, under
+  `@sidetabs_note_restored`; a note restore has no off switch, since all it can
+  do is attach a note that is still on disk.
 - **Per-tag billing-cycle reset**: a window carrying a tag (`@sidetabs_timer_tag`)
   whose row in the tags file names a reset day (1–31, clamped to the month's real
   length) zeroes itself on that day each month. The check is lazy — it happens on
@@ -615,10 +617,32 @@ clock while installed.
 
   Notes survive restarts on their own: every edit writes through to
   `@sidetabs-note-store`, and the post-restore hook re-seeds live windows from
-  it, matched by session + window *name* (so renaming a window detaches its
-  stored note until you next edit it, and with duplicate names only the
+  it, matched by session + window *name* (with duplicate names only the
   lowest-indexed window is seeded). A window that already has a note is never
-  overwritten by a restore.
+  overwritten by a restore, and a restore only ever *attaches* notes — it never
+  writes the store or touches a note file. Notes also ride the boot-time
+  `client-attached` fallback described above, so a start-up where the resurrect
+  hook never fires no longer leaves every note unattached.
+
+  **Notes follow renames.** The index row is filed under the window's *current*
+  name: renaming a window, or its session, re-files the row at once (on the same
+  rename hooks the flag store uses), so a note has exactly one row and a restart
+  looks for it under the name the window has now. Unlike a flag, a note leaves
+  nothing behind under the old name. The one case that still needs a hand is
+  the reverse: if a restore brings a window back under a name it had *before* a
+  rename (a tmux-resurrect save older than the rename does this), the note is
+  filed under the newer name and attaches to nothing. The text is untouched on
+  disk — rename the window to match and run
+  `tmux run-shell '<plugin>/scripts/note.sh restore'`.
+
+  Clearing a note removes every row that points at it, so the index never keeps
+  a row for a deleted file. Nothing but that explicit clear and the manual `gc`
+  below ever deletes note text. If a rename lands a noted window on a name some
+  *other* note is already filed under (a closed window's, waiting for it to come
+  back), both rows are kept — the live note first, so it is the one a restart
+  re-attaches — and the waiting note has the name to itself again once the
+  window moves on. Saving an empty buffer in a window that has no note clears
+  nothing: a note filed under that name but not attached yet is left alone.
 
   Notes written before this store existed were kept inline in the window option;
   they still open normally and convert to a file the first time you save them.
@@ -670,6 +694,7 @@ cannot leak in:
 ./tests/uninstall_hooks_smoke.sh # uninstall tears down only our own hook indices (drift check)
 ./tests/move_window_smoke.sh     # moving a window between sessions re-pins its sidebar
 ./tests/notes_smoke.sh           # per-window notes + durable store
+./tests/note_rename_smoke.sh     # notes follow renames, no dangling rows, boot-time restore
 ./tests/agent_status_smoke.sh    # agent status: aggregation, visit-clear, render
 ./tests/tag_menu_smoke.sh        # assign-client submenu + register-repo passthrough
 ./tests/timer_cycle_smoke.sh     # per-tag billing-cycle auto reset
