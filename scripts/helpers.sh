@@ -22,6 +22,16 @@ set_session_option() {
     tmux set-option -t "$1" -q "$2" "$3"
 }
 
+# Remove a session user option entirely. NOT the same as setting it to "" —
+# show-option cannot tell an empty value from an unset one, and tmux's #{?opt,…}
+# ternary reads an empty value as false but a `#{opt}` interpolation still finds
+# the option, so "set to empty" is a third state nothing here wants. Mirrors
+# unset_window_option, and is best-effort for the same reason: unsetting an
+# option on a session that just died must not fail the caller.
+unset_session_option() {
+    tmux set-option -t "$1" -qu "$2" 2>/dev/null || true
+}
+
 get_pane_option() {
     local pane_id="$1" option="$2" default_value="$3" value
     value="$(tmux show-option -p -t "$pane_id" -qv "$option" 2>/dev/null)"
@@ -127,6 +137,43 @@ cycle_start() {
     pdim="$(cycle_days_in_month "$py" "$pm")"
     boundary="$reset_day"; [ "$boundary" -gt "$pdim" ] && boundary="$pdim"
     printf '%04d-%02d-%02d\n' "$py" "$pm" "$boundary"
+}
+
+# store_lock/store_unlock: serialize the read-modify-write of ANY durable TSV
+# store this plugin keeps (notes, flags, ...). Without it two writers sharing
+# a store file - two note.sh runs for DIFFERENT windows firing at once, a
+# loop tagging several windows, whatever a second store adds - can both read
+# the store before either writes back, and the second mv silently drops the
+# first writer's row. mkdir is the atomic primitive available everywhere
+# (macOS has no flock(1)); timer.sh's lock_win uses the same pattern for a
+# different lock. Best-effort in both directions: after ~1s (20 tries *
+# 0.05s) we assume the holder died mid-write, force-break the lock and
+# proceed, because losing a row to a rare race still beats hanging a keypress
+# or refusing to save.
+#
+# store_lock <lockdir>: blocks (mkdir-polling) until the lock is held, or a
+# stale lock is force-broken after the timeout above. Returns 1 only if
+# mkdir itself is impossible (e.g. an unwritable parent) even after the
+# force-break attempt.
+store_lock() {
+    local d="$1" i=0
+    while ! mkdir "$d" 2>/dev/null; do
+        i=$((i + 1))
+        if [ "$i" -ge 20 ]; then
+            rmdir "$d" 2>/dev/null || return 1
+            mkdir "$d" 2>/dev/null || return 1
+            return 0
+        fi
+        sleep 0.05
+    done
+    return 0
+}
+
+# store_unlock <lockdir>: release a lock taken by store_lock. Best-effort - a
+# lock directory that is already gone (e.g. it was force-broken out from
+# under us) is not an error.
+store_unlock() {
+    rmdir "$1" 2>/dev/null || true
 }
 
 # Returns the pane_id of the sidetab pane in a window, or empty.

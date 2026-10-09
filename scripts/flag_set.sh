@@ -34,4 +34,11 @@ case "$VAL" in
         ;;
 esac
 
+# Write through to the durable store — same reasoning as flag_cycle.sh, and the
+# reason this sits AFTER the case rather than inside its arms: the two arms that
+# reach here (set and clear) both changed live state, while the two that bail
+# (non-numeric, out of range) exit before this line and so leave the store
+# alone, exactly as they leave the window option alone.
+"$CURRENT_DIR/flag_store.sh" sync || true
+
 "$CURRENT_DIR/refresh.sh" force

@@ -31,6 +31,9 @@ GLYPH="$(printf '\xef\x89\x89')"   # U+F249 nerd-font sticky-note
 tmux -L "$SOCKET" -f /dev/null new-session -d -s main -n alpha -x 200 -y 50
 tmux -L "$SOCKET" set-option -g @sidetabs-summary off
 tmux -L "$SOCKET" set-option -g @sidetabs-note-store "$STORE"
+# Section 20 renames a window, and the plugin wires flag_store.sh to that hook:
+# without this it would snapshot THIS server into the user's real flags.tsv.
+tmux -L "$SOCKET" set-option -g @sidetabs-flag-store "$WORK/flags.tsv"
 tmux -L "$SOCKET" run-shell "$PLUGIN_DIR/sidetabs.tmux"
 sleep 0.4
 tmux -L "$SOCKET" new-window -n beta
@@ -316,7 +319,14 @@ for cw in $CW; do
 done
 wait
 sleep 1
-[ "$(storerows)" = "$K" ] || fail "concurrent sets lost store rows: expected $K, got $(storerows)"
+# Counted by name, not as a store total: the store was truncated above, and a
+# write now re-files EVERY live note — which puts back the rows of the windows
+# noted in earlier sections (that is the store healing, not a stray write).
+concrows="$(awk -F'\t' '$1=="main" && $2 ~ /^conc[0-9]+$/ {n++} END{print n+0}' "$STORE")"
+[ "$concrows" = "$K" ] || fail "concurrent sets lost store rows: expected $K, got $concrows"
+nlive="$(tmux -L "$SOCKET" list-windows -a -F '#{@sidetabs_note}' | grep -c '^n1-' || true)"
+[ "$(storerows)" = "$nlive" ] \
+  || fail "expected one store row per live note ($nlive), got $(storerows): $(cat "$STORE")"
 i=1
 while [ "$i" -le "$K" ]; do
   awk -F'\t' -v n="conc$i" '$1=="main" && $2==n' "$STORE" | grep -q . \
@@ -468,6 +478,10 @@ case "$got" in n1-[A-Za-z0-9]*) : ;; *) fail "legacy note did not convert to an 
   || fail "legacy conversion changed the text: [$(cat "$NDIR/$got")]"
 awk -F'\t' -v id="$got" '$2=="legacy" && $3==id' "$STORE" | grep -q . \
   || fail "legacy store row was not rewritten to the note id"
+# REWRITTEN, not joined: the inline row the conversion supersedes must be gone,
+# or the same text would be filed twice under one name.
+[ "$(awk -F'\t' '$2=="legacy"{n++} END{print n+0}' "$STORE")" = "1" ] \
+  || fail "legacy conversion left the old inline row beside the new one: $(awk -F'\t' '$2=="legacy"' "$STORE")"
 pass "legacy inline notes open correctly and migrate to a file on save"
 
 # --- 20. gc removes only unreferenced note files ----------------------------
@@ -480,8 +494,8 @@ run "$PLUGIN_DIR/scripts/note.sh set $wg keep me"
 sleep 0.4
 keep_id="$(winopt "$wg" @sidetabs_note)"
 case "$keep_id" in n1-[A-Za-z0-9]*) : ;; *) fail "setup: gckeep has no note id" ;; esac
-# A window renamed after its note was set is referenced ONLY by the live option
-# (its store row still sits under the old name) — gc must keep it.
+# A renamed window's note must survive too. The rename hook re-files its row
+# (tests/note_rename_smoke.sh), and the live option references it either way.
 tmux -L "$SOCKET" rename-window -t "$wg" gcrenamed; sleep 0.3
 
 orphan="$NDIR/n1-orphan01"

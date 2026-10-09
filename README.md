@@ -17,6 +17,10 @@ A persistent left-side window-list sidebar for tmux. Inspired by [cmux](https://
   by ` | ` when there are multiple panes. Toggle with `@sidetabs-summary`.
   (Ports are intentionally omitted; bell notifications already show as a red tab.)
 - `prefix + Tab` toggles between expanded and a collapsed icon-strip.
+- Opt in with `@sidetabs-session-strip on` and the bottom bar becomes one pill per
+  **session**, colored by bells, agent attention and the color you gave it, and
+  shrinking in a fixed order rather than being clipped (see
+  [Session strip](#session-strip)).
 - `C-h` (your own vim-aware binding) moves left into the sidebar; `C-l` moves back out.
 - When focused inside the sidebar, `C-j` / `C-k` step to the next / previous window
   and keep focus in the sidebar so you can keep browsing.
@@ -68,6 +72,7 @@ run-shell '/path/to/tmux-sidetabs/sidetabs.tmux'
 | `prefix + /` | Fuzzy-search this session's windows in a popup and jump to one |
 | `C-c` (in sidebar) | Cycle the current window's flag color one step forward (yellow → green → blue → purple → orange → teal → indigo → slate → none) |
 | `M-c` (in sidebar) | Open the flag color **picker**: a menu of live color swatches — press `1`-`8` to jump straight to a color, `0` to clear |
+| `M-s` (in sidebar) | Open the **session** color picker (same palette). The color tints the sidebar header pill in every window of that session; `0` clears it |
 | `C-t` (in sidebar) | Start / pause / resume the current window's stopwatch; counting pauses when the window loses focus (hourglass glyph ⏳ = auto-held, counting resumes on focus) |
 | `M-t` (in sidebar) | Open the timer menu: adjust total time, cancel current interval, reset the timer, assign a client, or (once tagged, with a tags file configured) register the current repo |
 | `M-n` (in sidebar) | Edit the current window's **note** in a popup (`$EDITOR`); multi-line text is kept, save an empty buffer to clear it. Windows with a note show a sticky-note glyph  |
@@ -107,13 +112,33 @@ reverse-search, `C-n` completion, etc. are untouched.
 | `@sidetabs-flag-fg` | `#2e3440` | Flag pill text color (nord0) |
 | `@sidetabs-flag-key` | `C-c` | Key to cycle the current window's flag color (set to `none` to disable — applies to every key option) |
 | `@sidetabs-flag-picker-key` | `M-c` | Key to open the flag color picker menu (`none` to disable) |
+| `@sidetabs-session-flag-key` | `M-s` | Key to open the **session** color picker (`none` to disable). Sessions share `@sidetabs-flag-colors`; there is no cycle key, since a session color is set once rather than flipped daily |
+| `@sidetabs-flag-store` | `~/.local/share/tmux-sidetabs/flags.tsv` | Path to the durable flag-color store (TSV: session, window name, palette index — an **empty** window name is that session's own color). Rewritten as a whole-state snapshot on every color change, so clears persist and rows for sessions/windows that are closed are kept for their return |
+| `@sidetabs-flag-restore` | `on` | `off` to disable re-seeding window flag colors **and** session colors from the store — both after a tmux-resurrect restore and via the boot-time `client-attached` fallback |
+| `@sidetabs-session-strip` | `off` | `on` turns the bottom bar into the **session strip** — one pill per session in `status-left` (see [Session strip](#session-strip)). Off by default: this is a sidebar plugin, and it must not eat your status bar unasked |
+| `@sidetabs-strip-left-N` | (unset) | Left edge pill `N`, scanned `1`..`16` and stopping at the first gap. The value is tmux **format** syntax — typically `#(some command)`, but `#{...}` and strftime `%`-specs work too. Quote it with **single** quotes in your config: tmux expands `#{...}` and `$VARs` inside double quotes |
+| `@sidetabs-strip-left-N-bg` / `-fg` | idle colors | Per-pill colors for left pill `N`; default to `@sidetabs-strip-idle-bg` / `-fg`, so an uncolored pill blends into the strip |
+| `@sidetabs-strip-right-N` | (unset) | Right edge pill `N`, same rules. **Setting `-1` hands `status-right` to the plugin**; leaving it unset keeps that side yours (see the strip section's note on disowning it) |
+| `@sidetabs-strip-right-N-bg` / `-fg` | idle colors | Per-pill colors for right pill `N` |
+| `@sidetabs-strip-current-bg` | `blue` | Background of the current session's pill. There is deliberately no `-fg` twin — the text is always `black` |
+| `@sidetabs-strip-idle-bg` | `brightblack` | Background of a session pill with nothing to say |
+| `@sidetabs-strip-idle-fg` | `white` | Text of an idle session pill |
+| `@sidetabs-strip-bell-bg` | `#bf616a` | Background of a session holding a bell or an agent `attention` (nord11) |
+| `@sidetabs-strip-bell-fg` | `#eceff4` | Text of a bell / attention pill (nord6) |
+| `@sidetabs-strip-bg` | `black` | The bar's own background — what the last pill's arrow points into |
+| `@sidetabs-strip-sep-fg` | `match` | Ink for the thin separator drawn where two neighboring pills share a background. `match` is a sentinel meaning *derived from that pill* — its own background carried 40% of the way toward its own foreground — so a grey pill gets a muted grey separator and a cyan pill a deeper cyan one, each a shade of the pill it sits on. Any other value is a literal color used at every such join. Color boundaries are unaffected — their arrow is always the left pill's background |
+| `@sidetabs-strip-sep-glyph` | `U+E0B1` | Glyph for a same-background join, the thin powerline chevron. The solid `U+E0B0` arrow drawn at a real color boundary is fixed and has no option |
+| `@sidetabs-strip-current-marker` | `▎` | Marker drawn on the current session's pill — only when that session carries a color of its own, and always at the narrowest cascade stage |
+| `@sidetabs-strip-name-max` | `0` | Hard cap on a session name in the strip, applied before the width cascade starts (`0` = no cap). For short names at *every* width, not only a narrow one |
+| `@sidetabs-strip-assumed-width` | `200` | Width budget for a session with **no** attached client. Its strip is still generated — otherwise attaching would show a stale one — but there is no client to ask how wide it is |
+| `@sidetabs-strip-reserve` | `auto` | Columns to reserve for a `status-right` the plugin does not own. `auto` measures what it can and allows 12 columns per unmeasurable `#(shell)` job; a plain number replaces the estimate outright |
 | `@sidetabs-timer-key` | `C-t` | Key to start / pause the current window's timer |
 | `@sidetabs-timer-menu-key` | `M-t` | Key to open the timer menu (adjust total, cancel current interval, reset, assign client, register repo) |
 | `@sidetabs-timer-autofocus` | `on` | `off` to disable auto pause/resume when window loses/gains focus |
 | `@sidetabs-timer-restore` | `on` | `off` to disable re-seeding timers from the event log — both after a tmux-resurrect restore and via the boot-time `client-attached` fallback |
 | `@sidetabs-note-key` | `M-n` | Key to open the note editor popup for the current window (`none` to disable) |
 | `@sidetabs-note-icon` | (sticky note) | Glyph shown on rows that have a note. Any string works — set it to something ASCII if your font lacks Nerd Font glyphs. A multi-character icon is measured and takes its columns from the window name, so a long one leaves less room for the name |
-| `@sidetabs-note-store` | `~/.local/share/tmux-sidetabs/notes.tsv` | Path to the durable note index (TSV: session, window name, note id — one row per noted window). Note **text** lives one file per note in `<store>.d/`, so notes have no length limit |
+| `@sidetabs-note-store` | `~/.local/share/tmux-sidetabs/notes.tsv` | Path to the durable note index (TSV: session, window name, note id — one row per noted window, re-filed under the window's current name whenever the window or its session is renamed; rows for windows that are not open are kept for their return). Note **text** lives one file per note in `<store>.d/`, so notes have no length limit |
 | `@sidetabs-agent-status` | `on` | `off` stops any new agent signal being raised **and** hides any that is already showing (see [Agent status](#agent-status)) — the agent-side hooks can stay installed, they just stop costing anything. Flipping it off mid-turn is safe: a row that was lit at the time goes quiet immediately, and visiting the tab still clears the stored state |
 | `@sidetabs-agent-done-fg` | `#a3be8c` | Color of the ✓ glyph on a finished agent's row (nord14) |
 | `@sidetabs-timer-log` | `~/.local/share/tmux-sidetabs/timelog.tsv` | Path to the timer event log (TSV v3: timestamp, event type, interval start, interval duration, total, session, window, window_id, cwd, tag; events are `start` / `resume` / `pause` / `auto-pause` / `auto-resume` / `adjust` / `cancel` / `reset` / `restore`. `tag` is the window's `@sidetabs_timer_tag` at write time, or `-` when untagged; readers also accept older 9-col (v2, no tag) and legacy 6-col rows) |
@@ -126,6 +151,208 @@ set -g @sidetabs-expanded-width 24
 set -g @sidetabs-toggle-key 'b'
 set -g @sidetabs-active-bg '#a3be8c'
 ```
+
+## Session strip
+
+The sidebar shows the **windows** of the session you are in. The session strip is
+the other half: the bottom bar becomes one powerline pill per session, in stable
+creation order, colored by what is actually happening in each one.
+
+```tmux
+set -g @sidetabs-session-strip on
+```
+
+It is **off by default** — this is a sidebar plugin, and taking over your status
+bar without being asked would be hostile. While off, nothing is written: the
+script returns before touching a single tmux option.
+
+| Pill looks like | Meaning |
+| --- | --- |
+| **red** (`@sidetabs-strip-bell-bg`) | some window in that session has a pending bell, or an agent in it is asking for you (`attention`) |
+| **its own color** | you gave the session a color with `M-s` |
+| **blue** (`@sidetabs-strip-current-bg`) | the session you are in |
+| **grey** (`@sidetabs-strip-idle-bg`) | everything else |
+
+First match wins, top to bottom — the same precedence the sidebar's window rows
+use, so a session pill and a window row never disagree about what matters most.
+A `▎` marker appears on the current session's pill **only when that session
+carries a color of its own**: an uncolored current session is already identified
+by its blue, and a colored one has given that slot away.
+
+Separators follow the classic powerline rule, and which glyph a join gets depends
+on whether there is a color boundary there at all.
+
+Two pills with **different** backgrounds have a real boundary between them, so
+the separator is the solid arrow (U+E0B0) with `fg` = the left pill's background
+and `bg` = the right pill's — it reads as the left pill's own edge cutting into
+the next one. That is the `>` look, and it is deliberately not configurable.
+
+Two adjacent pills that **share** a background have no boundary to draw, so the
+separator is a thin chevron (U+E0B1, `@sidetabs-strip-sep-glyph`) on the shared
+background instead. A solid arrow there would either vanish into the surface
+under it or, forced into a contrasting ink, read as a heavy dark wedge between
+two pills that are in fact the same color.
+
+The chevron's ink is `@sidetabs-strip-sep-fg`, whose default is the sentinel
+`match`, meaning **derived from the pill it sits on**: that pill's own
+background, blended 40% of the way toward its own foreground, channel by
+channel. A white-on-grey session pill gets a muted grey chevron; a
+black-on-cyan sysinfo pill gets a deeper cyan one. The ink is therefore
+different for every differently-colored pill in the same strip — visible enough
+to read as a divider, close enough to the pill to belong to it, rather than one
+foreign color laid over all of them. Named colors (`brightblack`, `cyan`, …)
+are resolved to their nord hex first; a background with no hex to resolve to (a
+`colour123` index, an unknown name) falls back to the pill's foreground. Set
+the option to a color to override the derivation everywhere.
+
+Both glyphs are one display column wide, so a join costs the width cascade
+exactly one column whichever of the two it draws.
+
+### Edge pills
+
+Anything else you want pinned to either side — load, memory, disk, a clock —
+goes in numbered options, each its own individually colored pill:
+
+```tmux
+set -g @sidetabs-strip-left-1 '#(/path/to/tmux-sidetabs/scripts/sysinfo.sh load)'
+set -g @sidetabs-strip-left-1-bg cyan
+set -g @sidetabs-strip-left-1-fg black
+set -g @sidetabs-strip-left-2 '#(/path/to/tmux-sidetabs/scripts/sysinfo.sh mem)'
+set -g @sidetabs-strip-left-2-bg cyan
+set -g @sidetabs-strip-left-2-fg black
+set -g @sidetabs-strip-left-3 '#(/path/to/tmux-sidetabs/scripts/sysinfo.sh disk)'
+set -g @sidetabs-strip-left-3-bg cyan
+set -g @sidetabs-strip-left-3-fg black
+```
+
+Numbered options rather than one delimited list, because a pill's value is tmux
+format syntax on purpose: a `#(foo | bar)` simply cannot break the parse when
+there is no delimiter for it to be confused with. They are scanned `1`..`16` and
+stop at the first gap, so `-1` `-2` `-4` gives you two pills. **Use single
+quotes**: tmux expands `#{...}` and `$VARs` inside double quotes, and a pill's
+value has to reach the option verbatim so tmux can expand it at render time.
+
+`scripts/sysinfo.sh` takes an optional `load` | `mem` | `disk` argument for
+exactly this (a bare call still prints all three, unchanged), so the three
+measurements can be three pills the cascade drops one at a time instead of one
+opaque blob that goes all at once.
+
+**These options must be set before the `run-shell` that loads the plugin** —
+`sidetabs.tmux` draws the strip once at load and reads the master switch first.
+
+### The width cascade
+
+tmux truncates a status line by **hard cut** at the client edge: no ellipsis, no
+marker, and a 2-column glyph that does not fit is dropped whole. A clipped strip
+is therefore indistinguishable from a short one — you cannot tell that three
+sessions fell off the right-hand edge. So the strip does not clip; it sheds
+detail, in a fixed and predictable order, until it fits:
+
+| Stage | What goes |
+| --- | --- |
+| 0 | nothing — marker, full names, every edge pill |
+| 1 | the `▎` marker |
+| 2 | right edge pills, outermost first, one per stage |
+| 3 | left edge pills, outermost first, one per stage |
+| 4 | session names truncated to 12, then 8, then 6, then 4 |
+| 5 | ordinary sessions shrink to a single initial |
+| 6 | ordinary sessions become a bare block of their color |
+| 7 | floor: `▎<the session you are in> +N` |
+
+"Ordinary" means a session with no color of its own and no bell or agent
+attention. Stages 5 and 6 never touch a colored or alerting pill — the pills
+carrying information you deliberately set are the last to degrade, and the pill
+for the session you are in is never shortened at all. The floor is truthful at
+any width and always names where you are.
+
+The budget is the width of the **narrowest client attached to that session**,
+minus whatever is reserved for a `status-right` the plugin does not own.
+
+The plugin also sets tmux's own length caps per session, and **neither is set to
+the budget** — both are deliberately tighter:
+
+- **`status-left-length`** is set to `budget − reserve − the plugin's own right
+  chain`, i.e. exactly the columns the cascade just fitted the left side into.
+  It can never clip content the cascade decided to keep (it is never smaller than
+  the string), and being no larger makes tmux's own cap a **hard backstop**: if
+  one of *your* `#(shell)` edge pills renders wider than the 12 columns guessed
+  for it, tmux cuts our pill rather than letting it run over your clock. tmux's
+  default here is `10`, which would cut the strip off after the first pill, so
+  something has to be set — this is the tightest correct value.
+- **`status-right-length`** is set to the measured width of the plugin's own
+  right chain, not to the budget, for the same reason. It is written **only when
+  the plugin owns that side** (`@sidetabs-strip-right-1` set); a side you own is
+  never given a length any more than it is given content.
+
+### Handing over `status-right`
+
+The plugin always owns `status-left`. It owns `status-right` **only when
+`@sidetabs-strip-right-1` is set**. Leave that unset and the plugin never writes
+that side — not even to clear it — so your own clock, or another plugin's
+content, is left alone. It is *measured* and **reserved** instead, so the strip
+fits itself around it rather than running underneath it.
+
+One consequence is worth knowing before it surprises you: **unsetting the last
+`@sidetabs-strip-right-N` does not put your old `status-right` back.** The plugin
+stops owning the side, and from that moment on it starts *reserving* the string
+it last wrote there — because a disowned side is never cleared, only measured.
+Set `status-right` back to what you want yourself after taking it back.
+
+### tmux facts this is built on
+
+Measured on tmux 3.6b. Several of these are load-bearing, and one contradicts the
+documentation — please read before "simplifying" anything here.
+
+- **`#{session_bell_flag}` is broken and always returns `0`.** Upstream's
+  `format_cb_session_bell_flag` has an `RB_FOREACH` whose body `return`s
+  unconditionally on the first iteration, so only the session's *lowest-index
+  window* is ever examined. `#{session_activity_flag}` and
+  `#{session_silence_flag}` are worse: they test the format target's winlink
+  rather than the loop variable, so they merely mirror the per-window flag.
+  **Do not reach for any of the three.** Per-window `#{window_bell_flag}` is
+  correct, and `scripts/strip.sh` rolls it up per session in bash. This is not a
+  candidate for simplification — it is the workaround for the bug.
+- **`status-left` and `status-right` are per-session options.** `set-option -t A
+  status-left AAA` and `-t B ... BBB` hold independently. That is what makes one
+  generated string per session possible, and it is why "is this pill the current
+  session" is known statically at generation time — no `#{?#{==:...}}` ternary
+  survives into the output.
+- **The argv path caps at ~16KB** ("command too long", counted in bytes — the same
+  ceiling that once capped notes), while `printf … | tmux source-file /dev/stdin`
+  has no such limit. The whole batch of `set-option`s is delivered that way, in
+  one process: a tmux invocation costs ~5ms, a command inside one costs ~nothing.
+- **Truncation is a hard cut by display column** — no ellipsis, no marker, and a
+  2-column glyph that does not fit is dropped whole. Style escapes do not count
+  toward the length. This is the entire reason the width cascade exists.
+- **Uppercase hex corrupts under a second format expansion** (`#D` is the
+  `pane_id` alias, `#S` the session name, and so on), so every color the strip
+  emits is lowercased first. `#d08770` survives; `#D08770` does not.
+- The strip is **generated, not templated**. A `#{S:}` loop cannot see its own
+  neighbors, and a powerline arrow needs *both* the colors it sits between. The
+  version this replaced worked around that with per-session `@strip_next`
+  bookkeeping refreshed by hooks — bookkeeping that only ever existed in a
+  *running* server, so it was stale after every restart and the separators came
+  back the wrong color. A generator knows every neighbor directly, so there is
+  nothing left to go stale.
+
+### Known limitations
+
+- **Width is counted in characters**, so a CJK session name misaligns the strip
+  (exactly as a CJK window name misaligns the sidebar today).
+- **Cascade stages flap on a slow resize.** Regeneration is triggered by
+  `client-resized`, so dragging a terminal across a stage boundary pops a pill in
+  and out. There is no hysteresis; accepted.
+- **Stale store rows are never pruned**, so a new session that reuses an old
+  session's name inherits that name's color.
+- **Two clients on one session share the narrowest budget.** One string is
+  generated per session, so fitting the wider client would silently clip the
+  narrower one.
+- **A config reload alone does not restore `status-left`.** It is a per-session
+  option and the plugin sets it per session, so a *global* `set -g status-left …`
+  is shadowed by the per-session value. `scripts/uninstall.sh` therefore unsets
+  it per session for you (see [Uninstall](#uninstall)) — but if you remove the
+  plugin without running that script, the strip stays on screen until you unset
+  it yourself.
 
 ## Agent status
 
@@ -244,6 +471,18 @@ tmux run-shell '/path/to/tmux-sidetabs/scripts/uninstall.sh'
 Then remove the plugin line from `~/.tmux.conf` and reload. (Reload restores your
 original `C-h` / `C-j` / `C-k` bindings.)
 
+If you had the [session strip](#session-strip) on, the script puts the status
+line back for you. `status-left` is a **per-session** option and the plugin sets
+it per session, so a per-session value shadows any global one your config sets —
+a reload on its own would write a global that the leftover value hides. So
+`uninstall.sh` unsets `status-left` and `status-left-length` on every session,
+and your own (or tmux's default) status line shows through again immediately.
+
+`status-right` is unset only on the sessions where the plugin actually owned it,
+i.e. only if you had set `@sidetabs-strip-right-1`. A `status-right` the plugin
+never wrote is never cleared — the same rule that keeps it from writing over your
+clock while installed.
+
 ## Notes
 
 - The `C-j` / `C-k` overrides reproduce a standard vim-aware `is_vim` detection so
@@ -263,9 +502,16 @@ original `C-h` / `C-j` / `C-k` bindings.)
   *some* color); `M-c` opens a picker menu showing each color as a real swatch, with
   the current one marked, so you can jump straight to one with a number key. Both act
   on the same per-window state, so they're interchangeable.
-- The palette is an ordered list and the window option stores an **index** into it, so
-  reordering `@sidetabs-flag-colors` recolors existing flags. Append new colors at the
-  end to avoid that.
+- **Session colors**: `M-s` opens the same picker for the **session** rather than the
+  window. The color it sets tints the sidebar's header pill — the session-name bar at
+  the top — in *every* window of that session, so a glance at any sidebar tells you
+  which session you're in. `0` clears it and the header goes back to
+  `@sidetabs-header-bg`. There is no cycle key: a session color is set once, unlike a
+  window flag you flip through the day.
+- The palette is an ordered list and both the window option and the session option
+  store an **index** into it, so reordering `@sidetabs-flag-colors` recolors existing
+  window flags and session colors alike. Append new colors at the end to avoid that.
+  Sessions deliberately share the window palette — there is one list to configure.
 - Bell notifications (red row) always outrank flag colors — a window with a pending
   bell displays in red regardless of its flag.
 - **Timer behavior**: When a timer is running in a focused window, it counts only while
@@ -290,8 +536,26 @@ original `C-h` / `C-j` / `C-k` bindings.)
   which is what makes a billing boundary crossed while the server was down still
   reset on the next interaction. Each re-seed logs a `restore` event. Seconds
   between the last logged event and the server dying are not recoverable.
-  Disable with `@sidetabs-timer-restore off`. Flag colors have no durable record
-  and still reset with the server.
+  Disable with `@sidetabs-timer-restore off`.
+- **Flag colors survive restarts too.** Every set and every clear — from `C-c`,
+  from the `M-c` picker, from the `M-s` session picker, and from a window rename
+  — writes the whole live flag state through to `@sidetabs-flag-store`, and the
+  post-restore hook replays it onto the new server, matched by session + window
+  *name* for a window flag and by session *name* for a session color (ids change
+  across restarts; with duplicate window names only the first window wins). A
+  window or session that already carries a color is never overwritten, a record
+  naming something that no longer exists is ignored rather than misapplied, and
+  a record whose index no longer fits `@sidetabs-flag-colors` is dropped.
+  Disable with `@sidetabs-flag-restore off`.
+
+  The store is a **snapshot**, not a ledger: each write rewrites it from live
+  state, so a flag you cleared is genuinely gone, while rows for sessions and
+  windows that are not currently open are kept untouched — close a session and
+  its colors are waiting when you open it again. Nothing is ever pruned, so a
+  new session reusing an old name inherits that name's colors. The new store is
+  written to a temp file and moved into place only once every step succeeded,
+  so an unreadable store or a full disk leaves it exactly as it was rather than
+  emptying it.
 - **Restore has a second delivery path.** tmux-continuum skips auto-restore
   entirely when another tmux server was running at startup, or when the server
   is older than `@continuum-restore-max-delay` — resurrect's post-restore hook
@@ -300,7 +564,12 @@ original `C-h` / `C-j` / `C-k` bindings.)
   and only once per server generation (`@sidetabs_timer_restored`): re-seeding
   on a later attach could hand a freshly created window the total of a long-gone
   window with the same name. A restore that fails now says so with a
-  `display-message` instead of being swallowed.
+  `display-message` instead of being swallowed. Flag colors use the same
+  fallback on the next `client-attached` slot, with their own generation flag
+  (`@sidetabs_flag_restored`) so disabling one restore cannot make the other
+  think the generation is already seeded. Notes use it as well, under
+  `@sidetabs_note_restored`; a note restore has no off switch, since all it can
+  do is attach a note that is still on disk.
 - **Per-tag billing-cycle reset**: a window carrying a tag (`@sidetabs_timer_tag`)
   whose row in the tags file names a reset day (1–31, clamped to the month's real
   length) zeroes itself on that day each month. The check is lazy — it happens on
@@ -348,10 +617,45 @@ original `C-h` / `C-j` / `C-k` bindings.)
 
   Notes survive restarts on their own: every edit writes through to
   `@sidetabs-note-store`, and the post-restore hook re-seeds live windows from
-  it, matched by session + window *name* (so renaming a window detaches its
-  stored note until you next edit it, and with duplicate names only the
+  it, matched by session + window *name* (with duplicate names only the
   lowest-indexed window is seeded). A window that already has a note is never
-  overwritten by a restore.
+  overwritten by a restore, and a restore only ever *attaches* notes — it never
+  writes the store or touches a note file. Notes also ride the boot-time
+  `client-attached` fallback described above, so a start-up where the resurrect
+  hook never fires no longer leaves every note unattached.
+
+  **Notes follow renames.** The index row is filed under the window's *current*
+  name: renaming a window, or its session, re-files the row at once (on the same
+  rename hooks the flag store uses), so a note has one row per window carrying
+  it — a single row in the ordinary case, one per session for a window linked
+  into several — and a restart looks for it under the name the window has now.
+  Unlike a flag, a note leaves nothing behind under the old name. The one case
+  that still needs a hand is
+  the reverse: if a restore brings a window back under a name it had *before* a
+  rename (a tmux-resurrect save older than the rename does this), the note is
+  filed under the newer name and attaches to nothing. The text is untouched on
+  disk — rename the window to match and run
+  `tmux run-shell '<plugin>/scripts/note.sh restore'`.
+
+  Clearing a note removes every row that points at it, so the plugin no longer
+  *writes* a row for a deleted file. Rows of that kind left by older versions
+  are not pruned, but a restore steps over them. Nothing but that explicit
+  clear and the manual `gc` below ever deletes note text. If a rename lands a
+  noted window on a name some *other* note is already filed under (a closed
+  window's, waiting for it to come back), both rows are kept — the live note
+  first, so it is the one a restart re-attaches — and the waiting note has the
+  name to itself again once the window moves on. Saving an empty buffer in a
+  window that has no note clears nothing: a note filed under that name but not
+  attached yet is left alone. The other side of keeping a closed window's note
+  waiting under its name: a *new* window that takes that name, gets a note of
+  its own and later clears it will see the older, waiting note attach to it
+  after the next restart.
+
+  **Upgrading on a running server:** the plugin now also claims the hook slots
+  `window-renamed[2]`, `session-renamed[2]` and `client-attached[5]`. Reload
+  your whole tmux config rather than re-running `sidetabs.tmux` on its own —
+  otherwise a handler another plugin appended at one of those slots is
+  overwritten, and stays gone until the next full load puts it back.
 
   Notes written before this store existed were kept inline in the window option;
   they still open normally and convert to a file the first time you save them.
@@ -397,7 +701,13 @@ cannot leak in:
 ./tests/resurrect_smoke.sh       # tmux-resurrect pre/post hooks
 ./tests/resurrect_scrub_smoke.sh # post-save rewrite of the save file
 ./tests/timer_restore_smoke.sh   # re-seeding timers from the event log
+./tests/flag_restore_smoke.sh    # durable window flag + session colors, and their restore
+./tests/session_flag_smoke.sh    # the M-s session color picker and the header tint
+./tests/strip_smoke.sh           # the session strip: pills, precedence, edge pills, width cascade
+./tests/uninstall_hooks_smoke.sh # uninstall tears down only our own hook indices (drift check)
+./tests/move_window_smoke.sh     # moving a window between sessions re-pins its sidebar
 ./tests/notes_smoke.sh           # per-window notes + durable store
+./tests/note_rename_smoke.sh     # notes follow renames, no dangling rows, boot-time restore
 ./tests/agent_status_smoke.sh    # agent status: aggregation, visit-clear, render
 ./tests/tag_menu_smoke.sh        # assign-client submenu + register-repo passthrough
 ./tests/timer_cycle_smoke.sh     # per-tag billing-cycle auto reset

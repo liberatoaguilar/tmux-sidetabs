@@ -45,6 +45,21 @@ fi
 # TSV note store is the durable record (also matched by session + window name).
 "$CURRENT_DIR/note.sh" restore || true
 
+# ...and for flag colours, the third state in this family. Runs while
+# RESTORING_OPTION is still "1" (it is cleared further down), which is exactly
+# what flag_store.sh's own stand-down guard wants: no sync can snapshot the
+# half-restored server out from under this replay.
+"$CURRENT_DIR/flag_restore.sh" || true
+
+# Redraw the bottom session strip from the restored world. `force` is
+# mandatory here, not a nicety: a restore recreates every session in one burst,
+# so the session-created hooks it fires all land inside the 100ms debounce and
+# every one after the first is dropped. The final state — the one that matters
+# — would be the one dropped. This runs unconditionally because a restore
+# changes the SESSION LIST even when it re-seeds no colour at all, which
+# flag_restore.sh's own `changed` gate would not catch.
+"$CURRENT_DIR/strip.sh" force || true
+
 # Adopt restored sidebars in place. A restored sidebar is: flush-left (pane_left
 # 0), spanning the full window height, narrower than half the window (a sidebar
 # is never a main pane), and not already marked. Width-relative-to-window keeps

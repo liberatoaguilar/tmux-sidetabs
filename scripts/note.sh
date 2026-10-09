@@ -22,13 +22,23 @@
 # and nothing downstream is whitespace-sensitive once the text is out of the
 # option and out of the TSV.
 #
+# The store row FOLLOWS THE WINDOW. Its key is (session name, window name)
+# because ids do not survive a restart, so a rename changes the key a note is
+# filed under; `sync` re-files it, and sidetabs.tmux runs that on window-renamed
+# and session-renamed. A note id therefore has one row per window carrying it
+# (one, unless the window is linked into several sessions), under that window's
+# current name — never a second one left behind under an old name.
+#
 # Bound (sidebar-focused): @sidetabs-note-key opens the edit popup.
-# Usage: note.sh <set|clear|edit-popup|restore|gc> [window_id] [text...]
+# Usage: note.sh <set|clear|edit-popup|sync|restore|gc> [window_id] [text...]
 #   set <wid> <text...>  sanitize + store + render (empty = clear)
-#   clear <wid>          unset the option, delete the file, drop the store row
+#   clear <wid>          unset the option, delete the file, drop its store rows
 #   edit-popup <wid>     $EDITOR on a temp file seeded with the note's text;
 #                        on exit the whole file becomes the note
-#   restore              re-seed live windows from the store (never clobbers)
+#   sync                 re-file every live note under its window's current name
+#   restore [boot]       re-seed live windows from the store (never clobbers,
+#                        never writes the store); `boot` is the client-attached
+#                        fallback, see the restore branch below
 #   gc                   delete note files nothing references
 set -euo pipefail
 
@@ -155,64 +165,175 @@ window_key() {
     SNAME="${SNAME//$TAB/ }"; WNAME="${WNAME//$TAB/ }"
 }
 
-# Serialize the read-modify-write below. Without it two note.sh runs for
-# DIFFERENT windows (two clients pressing the key at once, or a loop tagging
-# several windows) can both read the store before either writes back, and the
-# second mv silently drops the first one's row — the live window option survives
-# but the durable record used by `note.sh restore` does not. mkdir is the atomic
-# primitive available everywhere (macOS has no flock(1)); timer.sh's lock_win
-# uses the same pattern. Best-effort in both directions: after ~1s we assume the
-# holder died mid-write, break the lock and proceed, because losing a row to a
-# rare race still beats hanging a keypress or refusing to save the note.
-store_lock() {
-    local d="$1" i=0
-    while ! mkdir "$d" 2>/dev/null; do
-        i=$((i + 1))
-        if [ "$i" -ge 20 ]; then
-            rmdir "$d" 2>/dev/null || return 1
-            mkdir "$d" 2>/dev/null || return 1
-            return 0
-        fi
-        sleep 0.05
-    done
+# store_lock / store_unlock (mkdir as mutex — macOS has no flock(1), and the
+# durable record used by `note.sh restore` would otherwise lose a row when two
+# writers race) now live in helpers.sh, sourced above, so a second durable
+# store can reuse them instead of carrying its own copy. See there for the
+# mkdir-as-mutex mechanics and the stale-lock force-break timeout.
+
+# --- the durable index -------------------------------------------------------
+# SNAPSHOT-MERGE, the shape flag_store.sh uses, and for the same reason: every
+# write rebuilds the store from LIVE state under the lock instead of patching
+# one row, so a save and a rename hook racing each other cannot leave a row
+# under a name the window no longer has. Whichever writer takes the lock last
+# sees both the note and the new name.
+#
+# What the merge does with each store row:
+#   - its id is carried by a LIVE window (and the note file exists): the id is
+#     live-owned. It ends up with exactly one row per window carrying it, under
+#     that window's current (session, name); every other row for the id — the
+#     one a rename left under the old name — is dropped.
+#   - anything else is KEPT VERBATIM: rows for closed windows and closed
+#     sessions (this store deliberately keeps a note for a window that will
+#     come back), legacy inline-text rows, and lines it cannot parse.
+#
+# Unlike the flag store, a live window with NO note removes nothing. For a flag
+# "live and unset" means the user cleared it; for a note it is simply what
+# every window looks like before a restore has run, and treating it as a clear
+# would cost the row its only pointer. Clearing is always explicit: see
+# apply_note. That is also why this needs no restore-in-flight stand-down of
+# the kind flag_store.sh carries — a sync landing mid-restore sees windows that
+# carry no note yet, and those it leaves alone.
+#
+# A DISPLACED row — a different note already filed under the name a live noted
+# window has just been renamed to — is kept too, behind the live one. Dropping
+# it would orphan a file `gc` then deletes, i.e. lose text as a side effect of a
+# rename. Keeping it costs one stale-looking row and gives the name back to the
+# waiting note the moment the live window moves on. The live row goes FIRST
+# because `restore` applies the first row filed under a key, and after a
+# restart the window must get its own note back, not the one it displaced.
+#
+# A FAILED WRITE IS A NO-OP, NEVER A CLEAR (the house rule sanitize_file paid
+# for): the new store is built in a temp file beside the real one and moved into
+# place only after every step reported success.
+
+# store_live <file>: one "session <TAB> window <TAB> id" row per live window
+# carrying a note, behind a sentinel line.
+#
+# The id leads the list-windows format behind a literal "n", and the window name
+# trails it, for the two reasons flag_store_write_live spells out: `read` with
+# IFS=TAB collapses an EMPTY field and shifts everything after it (most windows
+# carry no note), and a name may hold a tab, which last position hands whole to
+# one variable to be squashed. A window with an empty name has no representable
+# key and is not recorded — as before, its row simply stays where it was.
+#
+# A legacy inline value is skipped: its text IS the value, so two closed windows
+# can legitimately hold identical rows and nothing may be deduplicated by it. It
+# is re-filed the first time it is saved, when it becomes an id. An id whose
+# file is gone is skipped as well — filing it would create the very dangling
+# row a clear exists to remove.
+store_live() {
+    local out="$1" d nval wid sname wname id
+    d="$(notes_dir)"
+    : > "$out" 2>/dev/null || return 1
+    # Sentinel: awk never opens an EMPTY first file, so the store's own records
+    # would be numbered as file 1 and be mistaken for the live snapshot.
+    printf '#live\n' >> "$out" 2>/dev/null || return 1
+    while IFS="$TAB" read -r nval wid sname wname; do
+        [ -n "$wid" ] || continue
+        [ -n "$wname" ] || continue
+        id="${nval#n}"
+        valid_id "$id" || continue
+        [ -f "$d/$id" ] || continue
+        sname="${sname//$TAB/ }"; wname="${wname//$TAB/ }"
+        printf '%s\t%s\t%s\n' "$sname" "$wname" "$id" >> "$out" 2>/dev/null || return 1
+    done <<< "$(tmux list-windows -a \
+        -F "n#{$NOTE_OPTION}${TAB}#{window_id}${TAB}#{session_name}${TAB}#{window_name}" 2>/dev/null)"
     return 0
 }
 
-# Rewrite the store without the (session, window) key, optionally appending a
-# new row. Temp file + mv so a reader never sees a half-written store; the lock
-# is what keeps two concurrent rewrites from clobbering each other. Every
-# failure path is best-effort: an unwritable store must not abort the live
-# state change.
-# store_write <sname> <wname> [note_id]   (no id = delete only)
-store_write() {
+# store_merge <storefile> <livefile> <tmpfile> [drop_id] [sname wname value]:
+# the pure-data half of the sync; any failure is a plain non-zero return.
+#   drop_id             remove EVERY row holding this id, under any key (a clear)
+#   sname wname value   remove the row holding exactly this legacy inline value
+#                       under this key (a legacy note being cleared or converted)
+# Both arrive through ENVIRON, not -v: awk expands backslash escapes in a -v
+# value, and a legacy value is full of them. Comparisons append "" to force a
+# STRING compare — awk would otherwise call a session named 1 equal to one
+# named 01.
+store_merge() {
+    local f="$1" livef="$2" tmpf="$3" src="$1"
+    [ -f "$f" ] || src=/dev/null
+    dropid="${4:-}" ls="${5:-}" lw="${6:-}" lv="${7:-}" awk -F"$TAB" '
+        BEGIN { dropid = ENVIRON["dropid"]; ls = ENVIRON["ls"]; lw = ENVIRON["lw"]; lv = ENVIRON["lv"] }
+        FNR == 1 { fileno++ }
+        fileno == 1 {
+            if ($0 == "#live" || NF < 3) next
+            p = $1 "\t" $2 "\t" $3
+            if (p in PAIR) next          # same name AND same note: one row
+            PAIR[p] = 1; HELD[$3] = 1
+            k = $1 "\t" $2
+            KP[k "\t" (++NK[k])] = p
+            ORDER[++n] = p
+            next
+        }
+        {
+            if (NF < 3) { print; next }
+            k = $1 "\t" $2
+            # First row filed under a live key: the live rows for that key go
+            # out HERE, ahead of anything they displace, and in place rather
+            # than appended, so a sync of a store that is already right is
+            # byte-identical.
+            if ((k in NK) && !(k in FLUSHED)) {
+                FLUSHED[k] = 1
+                for (i = 1; i <= NK[k]; i++) { p = KP[k "\t" i]; print p; EMIT[p] = 1 }
+            }
+            # A store saved by an editor with CRLF endings carries a \r on its
+            # last field. Compared raw, "id\r" is not the id: a live note would
+            # gain a second row, and a clear would leave one pointing at the
+            # file it just deleted. Only the COMPARISON is normalized — a row
+            # that is kept is still printed exactly as it was read.
+            v = $3; sub(/\r$/, "", v)
+            if (v in HELD) next          # live-owned: emitted above or in END
+            if (dropid != "" && (v "") == dropid) next
+            if (lv != "" && ($1 "") == ls && ($2 "") == lw && (v "") == lv) next
+            print
+        }
+        END {
+            for (i = 1; i <= n; i++) if (!(ORDER[i] in EMIT)) print ORDER[i]
+        }
+    ' "$livef" "$src" > "$tmpf" 2>/dev/null || return 1
+    return 0
+}
+
+# The critical section: everything between reading the store and replacing it.
+# Split out of store_sync() so every early return still releases the lock.
+store_sync_locked() {
+    local f="$1" tmpf livef rc=0
+    shift
+    tmpf="${f}.tmp.$$"
+    livef="${f}.live.$$"
+    if store_live "$livef" && store_merge "$f" "$livef" "$tmpf" "$@"; then
+        # Nothing to record and no store yet: do not create one. And an
+        # unchanged store is left alone rather than replaced by its twin — this
+        # runs on every window rename, automatic ones included.
+        if [ ! -f "$f" ] && [ ! -s "$tmpf" ]; then
+            :
+        elif [ -f "$f" ] && cmp -s "$tmpf" "$f" 2>/dev/null; then
+            :
+        else
+            mv "$tmpf" "$f" 2>/dev/null || rc=1
+        fi
+    else
+        rc=1
+    fi
+    rm -f "$tmpf" "$livef" 2>/dev/null || true
+    return "$rc"
+}
+
+# store_sync [drop_id] [sname wname value]: snapshot live notes into the store
+# (arguments as store_merge). Best-effort in both directions — an unwritable
+# store must never abort the live state change that called us, and proceeding
+# unlocked when the lock cannot be taken at all still beats refusing to save.
+store_sync() {
     local f lockd held=0
     f="$(store_path)"
     mkdir -p "$(dirname "$f")" 2>/dev/null || return 0
     lockd="${f}.lock"
     store_lock "$lockd" && held=1
-    store_rewrite "$f" "$@"
-    [ "$held" = "1" ] && rmdir "$lockd" 2>/dev/null
+    store_sync_locked "$f" "$@" || true
+    [ "$held" = "1" ] && store_unlock "$lockd"
     return 0
-}
-
-# The critical section of store_write: everything between reading the store and
-# replacing it. Split out so every early return still releases the lock.
-# store_rewrite <storefile> <sname> <wname> [note_id]
-store_rewrite() {
-    local f tmpf
-    f="$1"; shift
-    tmpf="${f}.tmp.$$"
-    if [ -f "$f" ]; then
-        awk -F"$TAB" -v s="$1" -v w="$2" '!($1 == s && $2 == w)' "$f" > "$tmpf" 2>/dev/null \
-            || { rm -f "$tmpf" 2>/dev/null; return 0; }
-    else
-        : > "$tmpf" 2>/dev/null || return 0
-    fi
-    if [ "$#" -ge 3 ]; then
-        printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$tmpf" 2>/dev/null \
-            || { rm -f "$tmpf" 2>/dev/null; return 0; }
-    fi
-    mv "$tmpf" "$f" 2>/dev/null || rm -f "$tmpf" 2>/dev/null || true
 }
 
 # apply_note <window_id> <srcfile>: the shared set/clear body. It takes a FILE,
@@ -243,7 +364,17 @@ apply_note() {
         rm -f "$stage" 2>/dev/null
         valid_id "$cur" && rm -f "$(note_path "$cur")" 2>/dev/null
         unset_window_option "$wid" "$NOTE_OPTION"
-        [ -n "$WNAME" ] && store_write "$SNAME" "$WNAME"
+        # Drop what THIS window's note was filed as, and nothing else. For an id
+        # that is every row holding it, whatever name it sits under — a row left
+        # pointing at the file just deleted is a note that looks present and
+        # opens empty. A window with no live note has nothing to clear, so the
+        # row filed under its name (a note still waiting to be restored there)
+        # is not this command's to remove.
+        if valid_id "$cur"; then
+            store_sync "$cur"
+        elif [ -n "$cur" ]; then
+            store_sync "" "$SNAME" "$WNAME" "$cur"
+        fi
     else
         if valid_id "$cur"; then
             id="$cur"
@@ -254,7 +385,14 @@ apply_note() {
         mv "$stage" "$(note_path "$id")" 2>/dev/null \
             || { rm -f "$stage" 2>/dev/null; return 0; }
         set_window_option "$wid" "$NOTE_OPTION" "$id"
-        [ -n "$WNAME" ] && store_write "$SNAME" "$WNAME" "$id"
+        # The option is set FIRST: the sync files whatever is live. A legacy
+        # inline value this save has just converted leaves its old row behind
+        # under the same key, holding text the new file now supersedes.
+        if [ -n "$cur" ] && ! valid_id "$cur"; then
+            store_sync "" "$SNAME" "$WNAME" "$cur"
+        else
+            store_sync
+        fi
     fi
     "$CURRENT_DIR/refresh.sh" force
 }
@@ -297,34 +435,117 @@ edit-popup)
     apply_note "$WID" "$TMPF"
     ;;
 
+sync)
+    # The window-renamed / session-renamed hook: a rename changed the key some
+    # note is filed under, so re-file it. Also safe to run by hand at any time —
+    # it is idempotent, and it is what collapses the old-name/new-name duplicate
+    # rows a store written before this existed can hold.
+    store_sync
+    ;;
+
 restore)
     # Re-seed after a server restart: window ids do not survive, so match by
     # (session name, window name). First window with a given name wins, and a
     # window that already has a live note is never touched — same rules (and
     # shape) as timer_restore.sh.
+    #
+    # READ-ONLY on the durable side: this sets window options and nothing else.
+    # It never writes the store and never touches a note file, so running it at
+    # the wrong moment (or twice) can do nothing worse than attach a note that
+    # is still on disk.
+    #
+    # Two delivery paths, deliberately not symmetric — the split timer_restore
+    # and flag_restore use, for the same reason:
+    #   (default)  resurrect_post.sh, after a tmux-resurrect restore. Always
+    #              runs, is safe to run by hand, and claims the generation.
+    #   boot       the client-attached fallback registered by sidetabs.tmux, for
+    #              when tmux-continuum skips auto-restore entirely and the
+    #              resurrect hook never fires. Only while the server is YOUNG
+    #              (< BOOT_MAX_AGE_S) and only once per server generation:
+    #              firing on a later attach would hand a window created hours
+    #              afterwards the note of a long-gone window with its name.
+    # The claim is one-directional on purpose: `boot` stands down once anything
+    # has restored this generation, but a resurrect restore never stands down
+    # for `boot` — losing that race (a client attaching before continuum
+    # restores) would leave every note unattached, and re-seeding an
+    # already-seeded window is a no-op.
+    MODE="${2:-}"
+    # Test hook: SIDETABS_NOTE_BOOT_MAX_AGE_S overrides the boot window in
+    # seconds (a non-integer is ignored). Documented here per the search.sh:7-8
+    # convention — run-shell does not inherit a test shell's exports, so tests
+    # pass it inline on the run-shell command string.
+    BOOT_MAX_AGE_S="${SIDETABS_NOTE_BOOT_MAX_AGE_S:-120}"
+    case "$BOOT_MAX_AGE_S" in ''|*[!0-9]*) BOOT_MAX_AGE_S=120 ;; esac
+    if [ "$MODE" = "boot" ]; then
+        [ "$(get_tmux_option "$NOTE_RESTORED_OPTION" '0')" = "1" ] && exit 0
+        # A restore in flight owns this generation; the post hook will claim it.
+        [ "$(get_tmux_option "$RESTORING_OPTION" '0')" = "1" ] && exit 0
+        # #{start_time} is raw epoch seconds. Fail CLOSED: an unreadable or
+        # nonsense server age means we cannot prove we are inside the boot
+        # window, and a note on the wrong window is worse than none.
+        started="$(tmux display-message -p '#{start_time}' 2>/dev/null || true)"
+        case "$started" in ''|*[!0-9]*) exit 0 ;; esac
+        [ "$(( $(date +%s) - started ))" -lt "$BOOT_MAX_AGE_S" ] || exit 0
+    fi
+    set_tmux_option "$NOTE_RESTORED_OPTION" "1"
     STORE="$(store_path)"
     [ -f "$STORE" ] || exit 0
+    NDIR="$(notes_dir)"
     applied="$US"
     changed=0
-    while IFS="$TAB" read -r sname wname wid; do
+    # Same field order as store_live, for the same two reasons (see there): the
+    # note leads behind a literal "n" so an unset option cannot shift the
+    # fields, and the window name trails so a tab inside it lands whole in one
+    # variable. The name is then squashed exactly as the writer squashes it, or
+    # a row would never match the window it was filed for.
+    while IFS="$TAB" read -r nval wid sname wname; do
         [ -n "$wid" ] || continue
+        [ -n "$wname" ] || continue
+        sname="${sname//$TAB/ }"; wname="${wname//$TAB/ }"
         key="${sname}${US}${wname}"
         case "$applied" in *"${US}${key}${US}"*) continue ;; esac
-        note="$(awk -F"$TAB" -v s="$sname" -v w="$wname" \
-            '$1 == s && $2 == w { print $3; exit }' "$STORE" 2>/dev/null)"
+        # Every row filed under this key, in store order; the first USABLE one
+        # is applied. A row pointing at a deleted note file is not usable — it
+        # would light the row's glyph for a note with no text — and it must not
+        # shadow a good row behind it either, so it is stepped over rather than
+        # ending the lookup. (Stepped over, never removed: restore does not
+        # write the store.)
+        #
+        # Names go in through ENVIRON, not -v: awk expands backslash escapes in
+        # a -v value, so a name holding one would never match itself. And each
+        # side is forced to a STRING with "": two numeric-looking names compare
+        # as NUMBERS otherwise, and session `01` would be handed the note filed
+        # under session `1`. The \r a CRLF line ending leaves on the last field
+        # is dropped first; left on, the id would fail valid_id and be applied
+        # as inline text. The store is read as a FILE and awk never exits
+        # early, so there is no writer to SIGPIPE.
+        note=""
+        while IFS= read -r cand; do
+            [ -n "$cand" ] || continue
+            if valid_id "$cand" && [ ! -f "$NDIR/$cand" ]; then
+                continue
+            fi
+            note="$cand"
+            break
+        done <<< "$(s="$sname" w="$wname" awk -F"$TAB" '
+            { sub(/\r$/, "") }
+            NF >= 3 && ($1 "") == ENVIRON["s"] && ($2 "") == ENVIRON["w"] { print $3 }
+        ' "$STORE" 2>/dev/null || true)"
         [ -n "$note" ] || continue
-        # A row pointing at a deleted note file would set the option and light
-        # the row's glyph for a note with no text. Drop it instead.
-        if valid_id "$note" && [ ! -f "$(note_path "$note")" ]; then
-            continue
-        fi
+        # Marked applied BEFORE the live check, so a second window with the same
+        # name is not seeded from the row the first one already owns.
         applied="${applied}${key}${US}"
-        if [ -n "$(get_window_option "$wid" "$NOTE_OPTION" "")" ]; then
-            continue
-        fi
-        set_window_option "$wid" "$NOTE_OPTION" "$note"
+        # Live value wins: it was set this generation and is fresher than the
+        # store.
+        [ -z "${nval#n}" ] || continue
+        # A set that fails skips that window; under `set -e` it would otherwise
+        # abort the whole restore and leave every window after it unseeded.
+        # (tmux 3.6b's `set-option -q` reports a window that vanished since the
+        # listing as SUCCESS, so this is for the versions that do not.)
+        set_window_option "$wid" "$NOTE_OPTION" "$note" 2>/dev/null || continue
         changed=1
-    done <<< "$(tmux list-windows -a -F "#{session_name}${TAB}#{window_name}${TAB}#{window_id}" 2>/dev/null)"
+    done <<< "$(tmux list-windows -a \
+        -F "n#{$NOTE_OPTION}${TAB}#{window_id}${TAB}#{session_name}${TAB}#{window_name}" 2>/dev/null)"
     if [ "$changed" = "1" ]; then
         "$CURRENT_DIR/refresh.sh" force
     fi
@@ -337,9 +558,10 @@ gc)
     # orphans at all anyway, because apply_note reuses a window's existing id.
     #
     # The reference set is the UNION of both sources, because either alone is
-    # incomplete: a window renamed since its note was set is referenced only by
-    # the live option (its store row still sits under the old name), and a note
-    # whose window is gone is referenced only by the store.
+    # incomplete: a live note the store has no row for (its store write failed,
+    # or the plugin's rename hooks are not loaded) is referenced only by the
+    # live option, and a note whose window is gone is referenced only by the
+    # store.
     NDIR="$(notes_dir)"
     [ -d "$NDIR" ] || exit 0
     STORE="$(store_path)"
@@ -347,7 +569,9 @@ gc)
     if [ -f "$STORE" ]; then
         while IFS= read -r rid; do
             [ -n "$rid" ] && REFS="${REFS}${rid}${US}"
-        done <<< "$(awk -F"$TAB" 'NF>=3 && $3 != "" { print $3 }' "$STORE" 2>/dev/null || true)"
+        # The \r of a CRLF line ending comes off first: left on the id, the file
+        # that row references would look unreferenced and be swept.
+        done <<< "$(awk -F"$TAB" '{ sub(/\r$/, "") } NF>=3 && $3 != "" { print $3 }' "$STORE" 2>/dev/null || true)"
     fi
     while IFS= read -r rid; do
         [ -n "$rid" ] && REFS="${REFS}${rid}${US}"

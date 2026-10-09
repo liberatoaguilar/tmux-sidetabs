@@ -30,7 +30,8 @@ separator style changes across restarts.
 - A per-session color, set from the sidebar, visible in the bottom strip.
 - Window and session colors survive a resurrect/continuum restart.
 - The strip becomes plugin-owned, tested, and versioned.
-- Solid-arrow separators everywhere (`>==>`), never the thin bar (`|==>`).
+- Classic powerline separators: the solid arrow (`>==>`) at every real color
+  boundary, a thin chevron on a same-background join.
 - The strip degrades gracefully as it runs out of width.
 
 ## Non-goals
@@ -56,11 +57,11 @@ Settled during design review. Recorded because several are non-obvious.
 | D7 | Sessions share `@sidetabs-flag-colors` | One palette; a second one stays backward-compatible to add later |
 | D8 | Agent `attention` rolls up to the session pill | Highest-value signal in a ten-session strip |
 | D9 | Session color also tints the sidebar header pill | Makes the color mean something where you actually work |
-| D10 | Uninstall restores nothing | Matches `uninstall.sh`'s existing convention; a conf reload does it for free |
+| D10 | ~~Uninstall restores nothing~~ — **superseded.** Uninstall unsets the status-line options per session | The original rationale ("a conf reload does it for free") was simply **wrong**; see [D10 was wrong](#d10-was-wrong) below |
 | D11 | Strip defaults **off** | README ships TPM install instructions; a sidebar plugin must not eat your status bar |
 | D12 | Fix `uninstall.sh`'s bare-name hook unset | It currently nukes tmux-ticker's `-ga` handlers |
 | D13 | **Generate `status-left` in bash**, drop `#{S:}` | Kills `@strip_next` — the mechanism that goes stale across restarts |
-| D14 | Solid `` everywhere; dark ink at same-color joins | User preference; ink configurable |
+| D14 | Solid `` at a color boundary; thin `` at a same-background join | The classic powerline rule. A solid arrow between two same-colored pills either vanishes into the surface or, inked for contrast, reads as a heavy dark wedge between pills that are the same color. **Revised** — see [D14 was revised](#d14-was-revised) |
 | D15 | Debounced regenerate with a `force` escape | Matches `refresh.sh`; restore must not be dropped |
 | D16 | Shrink cascade, not clipping | The bar will run out of width soon |
 | D17 | **One generated string per session** | `status-left` is a per-session option; makes "current" static and the width budget accurate |
@@ -169,13 +170,30 @@ All emitted hex is lowercase (fact 7).
 
 ### Separator rule
 
-Every separator is the trailing cell of the pill to its left, always `` (U+E0B0):
+Every separator is the trailing cell of the pill to its left. **Which glyph it is
+depends on whether there is a color boundary there at all** — the classic
+powerline rule:
 
-- backgrounds differ: `fg` = left pill's bg, `bg` = right pill's bg (standard powerline)
-- backgrounds match: `fg` = `@sidetabs-strip-sep-fg` (default `#2e3440`), `bg` = the shared bg
-- last pill: `fg` = its bg, `bg` = `@sidetabs-strip-bg` (default `black`)
+- **backgrounds differ** — a real boundary: the solid `` (U+E0B0), `fg` = left
+  pill's bg, `bg` = right pill's bg. Standard powerline; the arrow reads as the
+  left pill's own edge cutting into the next one. **Not configurable**: there is
+  one right glyph for a boundary and this is it.
+- **backgrounds match** — nothing to cut: the thin `` chevron
+  (`@sidetabs-strip-sep-glyph`, default U+E0B1) drawn on the shared background.
+  Ink is `@sidetabs-strip-sep-fg`, whose default is the **sentinel `match`**,
+  meaning *derived from that pill*: its own background blended 40% of the way
+  toward its own foreground, per RGB channel. A white-on-grey session pill gets
+  a muted grey chevron, a black-on-cyan sysinfo pill a deeper cyan one — the ink
+  is per pill, so two differently-colored pills in one strip get two different
+  inks. Named tmux colors are resolved to their nord hex first
+  (`variables.sh:STRIP_COLOR_NAMES`); a background that resolves to no hex falls
+  back to the pill's foreground. Any other value of the option is a literal
+  color applied at every same-background join.
+- **last pill**: the "right pill" is the bar background
+  (`@sidetabs-strip-bg`, default `black`) and the same match/differ test applies.
 
-`` (U+E0B1) is never emitted.
+Both glyphs are **one display column**, so a join costs the width cascade exactly
+1 either way and no stage needs to know which one it will get.
 
 ### Edge pills
 
@@ -194,8 +212,12 @@ Scanned `1..16`, stopping at the first gap. `@sidetabs-strip-right-N` is identic
 A side with no `-1` set is **never written by the plugin** (D11), but it is still
 **measured and reserved** so the strip cannot overrun content the user owns. The
 measurement expands that side with `#{T:...}`, strips `#[...]` sequences, and counts
-the remainder; if the expansion still contains `#(`, the width of a shell command is
-unknowable and the plugin falls back to `@sidetabs-strip-reserve`. An unowned side
+the remainder. The `#(` test must run on the **raw** value, not the expansion:
+verified on 3.6b, `#(echo hi) %H:%M` expands to ` 11:36` — the job leaves no `#(`
+behind, so testing the expansion would never fire. A shell command's width is
+unknowable synchronously (jobs are scheduled asynchronously), so each one adds a
+fixed estimate, and a numeric `@sidetabs-strip-reserve` replaces the estimate
+entirely. An unowned side
 is reserved but never dropped, so its stage in the cascade is skipped.
 
 `sysinfo.sh` grows an optional argument (`load` | `mem` | `disk`, default: all three
@@ -336,9 +358,52 @@ disagree. A failing test is a louder alarm than a silent mismatch, and it costs 
 machinery than recording claimed indices in a global option (which can itself go
 stale across a plugin upgrade).
 
-Uninstall also unbinds `@sidetabs-session-flag-key` and leaves `status-left` /
-`status-right` as the plugin last set them — a conf reload restores them, because
-they come from the conf (D10).
+Uninstall also unbinds `@sidetabs-session-flag-key`.
+
+## D10 was wrong
+
+This document originally decided (D10) that uninstall should leave `status-left` /
+`status-right` exactly as the plugin last set them, "because a conf reload restores
+them — they come from the conf". `uninstall.sh` shipped with that reasoning written
+into a comment. **It is false**, and it was verified false on tmux 3.6b:
+
+- `status-left` is a **per-session** option, and `strip.sh` sets it per session —
+  that is D17, the design's own central decision.
+- A session-scoped value **completely shadows** the global one. With
+  `set-option -t alpha status-left SESSION_LEFT` in force, a later
+  `set -g status-left GLOBAL_LEFT` renders nothing, and
+  `display-message -t alpha -p '#{status-left}'` still answers `SESSION_LEFT`.
+- So a conf reload restores nothing. It rewrites a global that the leftover
+  per-session value is hiding. Only `set-option -u -t <session> status-left` —
+  dropping the session-scoped value so the global shows through — puts the bar back.
+
+The mistake was reasoning about *where the value came from* (the conf) instead of
+*at which scope the plugin wrote it* (the session). Every other option this plugin
+touches is either global or user state, so "reload the conf" had always been a
+sufficient answer before the strip existed; the strip is the first thing the plugin
+writes at session scope, and the old rule was carried over without rechecking it.
+
+It was worst exactly where it mattered most: once a conf stops setting `status-left`
+at all — which is what happens when the strip takes the side over — there is nothing
+left to reload *back*, so the user is stranded with the plugin's generated bar and no
+obvious way out. Ticket 08's acceptance criterion ("uninstalling the plugin and
+reloading the config restores the previous status line") did not hold as written.
+
+**Corrected decision.** `uninstall.sh` unsets, in one batched `source-file` (the same
+idiom `strip.sh` installs with, one fork rather than ~5ms per session):
+
+- `status-left` and `status-left-length` on **every** session, always;
+- `status-right` and `status-right-length` only when `@sidetabs-strip-right-1` is
+  set — the exact condition under which `strip.sh` writes that side. Unsetting a
+  side the plugin never wrote would destroy the user's own content, which is the
+  one thing the reserve machinery in §5c exists to avoid;
+- the plugin's own bookkeeping globals (debounce stamps, the restore claims). User
+  state — flags, timers, notes, session colours — is deliberately untouched: an
+  uninstall is not a delete.
+
+A failed `list-sessions` skips the per-session part entirely rather than
+half-restoring, per the house rule that a failed operation is a no-op, never a clear.
+`tests/uninstall_hooks_smoke.sh` §3 asserts all three outcomes on a scratch server.
 
 ## Configuration surface
 
@@ -351,7 +416,8 @@ they come from the conf (D10).
 | `@sidetabs-strip-left-N` | *(unset)* | Left pill N (1..16); unset = plugin ignores that side |
 | `@sidetabs-strip-right-N` | *(unset)* | Right pill N (1..16) |
 | `@sidetabs-strip-left-N-bg` / `-fg` | theme | Per-pill colors |
-| `@sidetabs-strip-sep-fg` | `#2e3440` | Arrow ink where neighbors share a background |
+| `@sidetabs-strip-sep-fg` | `match` | Ink for the thin separator where neighbors share a background; the sentinel `match` = a muted tint of that pill (its bg 40% of the way to its fg) |
+| `@sidetabs-strip-sep-glyph` | `` (U+E0B1) | Glyph for a same-background join; the boundary arrow is fixed |
 | `@sidetabs-strip-current-marker` | `▎` | Marker on a flagged current session |
 | `@sidetabs-strip-current-bg` | `blue` | Current-session pill background |
 | `@sidetabs-strip-idle-bg` / `-fg` | `brightblack` / `white` | Unflagged pill |
@@ -375,8 +441,13 @@ under `${TMPDIR:-/tmp}`, `fail()`/`pass()` helpers.
 `show-options -t <session> -v status-left`, needing no attached client:
 pill order matches session-id order; the current pill is highlighted in its *own*
 session's string and not in another's; precedence bell > flag > current > idle;
-agent `attention` colors the pill like a bell; `` appears and `` never does;
-same-color joins use `@sidetabs-strip-sep-fg`; every cascade stage at forced budgets
+agent `attention` colors the pill like a bell; a color boundary draws `` and a
+same-background join draws ``, asserted by count so "an arrow somewhere" cannot
+pass; the same-background ink is derived per pill from that pill's own background
+(the expected blend recomputed in the test rather than borrowed from the
+implementation), a grey pill and a cyan pill in one strip getting different inks,
+an unresolvable background falling back to the pill's fg, and an explicit
+`@sidetabs-strip-sep-fg` overriding all of it; every cascade stage at forced budgets
 via a `SIDETABS_STRIP_TEST_WIDTH` override; the `+N` floor; emitted hex is lowercase.
 
 **`tests/flag_restore_smoke.sh`** — store round-trip for both row shapes; clearing a
@@ -387,7 +458,12 @@ index is ignored; a session name containing a literal backslash-t still matches
 
 **`tests/uninstall_hooks_smoke.sh`** — the drift check between `sidetabs.tmux` and
 `uninstall.sh`, plus a regression asserting that a foreign `-ga` handler registered
-above sidetabs' indices survives an uninstall.
+above sidetabs' indices survives an uninstall. §3 covers the status-line restore
+that supersedes D10: on a scratch server where the strip is live, uninstall must
+leave every session's `status-left` unset (so the global renders again), must leave
+a `status-right` it never owned exactly as it found it, and must unset one it did
+own. Each assertion is made both on the session-scoped option and on
+`display-message -p '#{status-left}'`, which is what a client actually renders.
 
 ## Implementation order
 
@@ -427,3 +503,67 @@ convenient — it is a bug fix, not part of this feature.
 - Collapsing grouped sessions.
 - Fixing `awk -v` in `note.sh` and `timer_restore.sh`.
 - A separate `@sidetabs-session-flag-colors` palette.
+
+## D14 was revised
+
+D14 originally read "solid `` everywhere; dark ink at same-color joins", and
+`@sidetabs-strip-sep-fg` defaulted to `#2e3440` to keep such an arrow visible.
+Rendered live, that is a row of heavy near-black filled triangles: one between
+every pair of same-colored sysinfo pills, and one between every pair of adjacent
+grey session pills. Nothing about those joins is a boundary, so drawing the
+boundary glyph at them states something false and does it loudly.
+
+The revision is the classic powerline rule, both halves of it. A **boundary**
+still gets the solid `` in the left pill's background — that is the `>` look the
+strip is built around and it is unchanged, and it is now explicitly not
+configurable. A **same-background** join gets the thin `` chevron instead, on
+the shared background, in an ink that belongs to the pill rather than being
+foreign to it: `@sidetabs-strip-sep-fg`'s default becomes the sentinel `match`,
+meaning the pill's own foreground. An explicit color still overrides it, so the
+ink remains a one-line taste test.
+
+Both glyphs occupy one display column, so nothing in the width cascade changes:
+a join still costs 1.
+
+### …and `match` was revised again
+
+Copying the pill's foreground is right in principle — the ink should come from
+the pill — but wrong in practice for the pills that actually carry the strip.
+The session pills are white on grey, so "the pill's own fg" is plain `white`:
+at chevron weight that is the brightest thing on the bar, and it reads as a mark
+laid *on* the pill rather than as part of it. The same rule on a black-on-cyan
+sysinfo pill gives a black chevron, which is the opposite failure and equally
+foreign.
+
+So `match` now means a **muted tint of the pill**, computed rather than copied:
+the pill's background carried **40% of the way toward its own foreground**, per
+RGB channel, integer arithmetic (bash has no floats, and macOS ships 3.2):
+
+```
+channel = (bg * 60 + fg * 40) / 100      truncated
+```
+
+Grey pill (`brightblack` on `white`) → `#848c9c`, a muted grey. Cyan pill
+(`cyan` on `black`) → `#648896`, a deeper cyan. The current-session pill
+(`blue` on `black`) → `#5f758d`. Each ink is derived from the pill it sits on,
+so one strip carries as many inks as it carries pill colors — which is the whole
+point, and the thing no single configured value can do.
+
+Blending needs numbers, and the strip emits tmux color **names**
+(`brightblack`, `black`, `white`, `cyan`, `blue`). `STRIP_COLOR_NAMES` in
+`variables.sh` resolves them to the same nord values the rest of the plugin uses
+(`DEFAULT_FLAG_COLORS`, the bell red, `@sidetabs-flag-fg`), as a space-delimited
+string table — bash 3.2 has no associative arrays. A color that resolves to no
+hex (a `colour123` index, an unknown name, `default`) has nothing to blend from
+and falls back to the pill's foreground: the house rule is that a failed
+operation is a no-op, so an unresolvable color degrades to the previous
+behavior, never to a blank or invalid `#[fg=]`.
+
+The derived ink is emitted **lowercase**, like every other hex in the file: `#D`
+is tmux's legacy `pane_id` alias, so an uppercase `#848C9C` would expand to
+`<pane_id>48C9C` under a second format expansion.
+
+Unchanged by all of this: the boundary arrow (still solid, still the left pill's
+background, still not configurable), an explicit `@sidetabs-strip-sep-fg` (still
+overrides every same-background join), and the width cascade — both glyphs are
+still one display column, so a join still costs 1.

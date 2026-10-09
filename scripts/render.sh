@@ -202,15 +202,36 @@ done
 # keeps the whole row construction fork-free (bash 3.1+).
 
 # A full-width header pill (bold) for the session name. Sets ROW.
+#
+# emit_header <label> <width> [sflag]
+#   sflag = the session's @sidetabs_sflag (a 1-based palette index) or 0/empty.
+#           When it names a real palette slot the pill takes that colour, with
+#           @sidetabs-flag-fg as the text — the same SEG_FLAG/CAP_FLAG pair a
+#           flagged window row uses, so a session and a window flagged the same
+#           slot look the same. Otherwise the pill keeps @sidetabs-header-bg /
+#           -fg exactly as before, so an uncoloured session is untouched.
+#
+# The colour is looked up in the arrays built once at startup rather than mixed
+# per call: emit_header runs every tick, and hex_rgb + seg_sgr are two forks.
 emit_header() {
-    local label="$1" width="$2" avail used pad spaces
+    local label="$1" width="$2" sflag="${3:-0}" avail used pad spaces seg cap
+    # Unset reads as empty and a hand-set option can hold anything; either way
+    # an unusable value means "no session colour", never a crash under set -e.
+    case "$sflag" in ''|*[!0-9]*) sflag=0 ;; esac
+    seg="$SEG_HDR"; cap="$CAP_HDR"
+    # An index past the end of the palette (the list was shortened since the
+    # colour was set) falls back to the default header rather than indexing off
+    # the end of the array and painting nothing.
+    if [ "$sflag" -ge 1 ] && [ "$sflag" -le "$FLAG_N" ]; then
+        seg="${SEG_FLAG[$sflag]}"; cap="${CAP_FLAG[$sflag]}"
+    fi
     avail=$((width - 1)); [ "$avail" -lt 0 ] && avail=0
     label=" ${label} "
     used=${#label}
     if [ "$used" -gt "$avail" ]; then label="${label:0:avail}"; used="$avail"; fi
     pad=$((avail - used)); [ "$pad" -lt 0 ] && pad=0
     printf -v spaces '%*s' "$pad" ''
-    printf -v ROW '%s%s%s%s%s%s%s%s' "$SEG_HDR" "$BOLD" "$label" "$NOBOLD" "$spaces" "$CAP_HDR" "$ARROW" "$RESET"
+    printf -v ROW '%s%s%s%s%s%s%s%s' "$seg" "$BOLD" "$label" "$NOBOLD" "$spaces" "$cap" "$ARROW" "$RESET"
 }
 
 # emit_row <active> <bell> <activity> <flagidx> <idx> <flags> <name> <width> <collapsed> [icon] [hasnote] [agent] [spinner] [age]
@@ -476,13 +497,24 @@ write_rowmap() {
 
 # One tmux round-trip per loop iteration: visibility + everything build_lines
 # and emit_summary need that isn't per-window. Sets VIS_CLIENTS, WIN_ACTIVE,
-# COLLAPSED, WIDTH, CACHE_WIN, CACHE_AT, CACHE_GIT, CACHE_DIRS, SNAME.
+# COLLAPSED, WIDTH, CACHE_WIN, CACHE_AT, CACHE_GIT, CACHE_DIRS, SFLAG, SNAME.
 # US-separated: the numeric fields can't contain 0x1f and the cache values are
 # control-char-sanitized at write time (emit_summary). window_active_clients
 # gets a 'c' prefix so an empty expansion (tmux < 3.1 doesn't know the format)
 # can't shift fields; SNAME is last so read's remainder-merge absorbs any
 # separator that still sneaks through.
-READ_STATE_FMT="#{pane_id}${US}c#{window_active_clients}${US}#{window_active}${US}#{?${COLLAPSED_OPTION},#{${COLLAPSED_OPTION}},0}${US}#{pane_width}${US}#{${SUMMARY_CACHE_WIN}}${US}#{${SUMMARY_CACHE_AT}}${US}#{${SUMMARY_CACHE_GIT}}${US}#{${SUMMARY_CACHE_DIRS}}${US}#{session_name}"
+#
+# The session colour (@sidetabs_sflag, the header tint) rides HERE rather than
+# in a show-option call of its own: this read already happens every tick, and
+# tmux expands one more field for free, so the tint costs zero extra tmux
+# process invocations (~5ms each — the cost that shaped every other read in this
+# file). MY_TARGET is session-qualified, so the option resolves in the right
+# session even for a window linked into several. The #{?opt,…} ternary gives an
+# unset option the literal 0, so the field can never be empty and shift the
+# ones after it — the same guard COLLAPSED_OPTION uses, and safe here for the
+# same reason: the value domain is indices >= 1, so tmux reading "0" as false
+# costs nothing.
+READ_STATE_FMT="#{pane_id}${US}c#{window_active_clients}${US}#{window_active}${US}#{?${COLLAPSED_OPTION},#{${COLLAPSED_OPTION}},0}${US}#{pane_width}${US}#{${SUMMARY_CACHE_WIN}}${US}#{${SUMMARY_CACHE_AT}}${US}#{${SUMMARY_CACHE_GIT}}${US}#{${SUMMARY_CACHE_DIRS}}${US}#{?${SFLAG_OPTION},#{${SFLAG_OPTION}},0}${US}#{session_name}"
 
 # Re-pin SESSION_ID / MY_WINDOW_ID / MY_TARGET from our own pane, in one
 # round-trip. The startup-pinned target goes stale when this window is MOVED
@@ -507,7 +539,7 @@ read_state() {
     local state attempt pane_check
     for attempt in 1 2; do
         state="$(tmux display-message -p -t "$MY_TARGET" "$READ_STATE_FMT" 2>/dev/null)"
-        IFS="$US" read -r pane_check VIS_CLIENTS WIN_ACTIVE COLLAPSED WIDTH CACHE_WIN CACHE_AT CACHE_GIT CACHE_DIRS SNAME <<< "$state"
+        IFS="$US" read -r pane_check VIS_CLIENTS WIN_ACTIVE COLLAPSED WIDTH CACHE_WIN CACHE_AT CACHE_GIT CACHE_DIRS SFLAG SNAME <<< "$state"
         # A pin invalidated by move-window does NOT fail — tmux best-matches
         # "$old-session:@my-window.%me" to the old session's CURRENT window and
         # ITS pane, so every field comes back populated with plausible values
@@ -557,7 +589,9 @@ interruptible_sleep() {
 # map correct across the header, the per-window rules, each window's timer line, and
 # the active window's 0-2 summary lines (all appended as plain lines, with no
 # ROW_WIN entry, so clicks on them stay no-ops).
-# Reads COLLAPSED/WIDTH/SNAME from read_state (already fetched this iteration).
+# Reads COLLAPSED/WIDTH/SFLAG/SNAME from read_state (already fetched this
+# iteration). SFLAG is the session's colour and reaches only the header pill:
+# collapsed mode draws no header, so there is nothing to tint there.
 build_lines() {
     LINES=(); ROW_WIN=()
     local collapsed="$COLLAPSED" width="$WIDTH" i fmt flags icon now_s telapsed tlive tic
@@ -604,7 +638,7 @@ build_lines() {
         return
     fi
 
-    emit_header "$SNAME" "$width"
+    emit_header "$SNAME" "$width" "$SFLAG"
     LINES+=("$ROW")                       # line 0: header
     now_s="$(date +%s)"
 

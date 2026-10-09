@@ -29,4 +29,12 @@ else
     set_window_option "$WID" "$FLAG_OPTION" "$next"
 fi
 
+# Write through to the durable store, so the colour survives the server. The
+# CLEAR arm needs this every bit as much as the set arm: the store is a snapshot
+# of live state, so the only way a cleared flag stays cleared across a restart
+# is for the clear itself to be snapshotted. `|| true` because an unwritable
+# store must never make a keypress look like it failed — the live change above
+# already happened.
+"$CURRENT_DIR/flag_store.sh" sync || true
+
 "$CURRENT_DIR/refresh.sh" force

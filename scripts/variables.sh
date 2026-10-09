@@ -15,7 +15,58 @@ RESTORING_OPTION="@sidetabs_restoring"
 # fallback and a tmux-resurrect restore never both seed the same generation.
 TIMER_RESTORED_OPTION="@sidetabs_timer_restored"
 
+# The same once-per-generation claim for FLAG colours (flag_restore.sh). Kept
+# separate from the timer's flag on purpose: the two restores have independent
+# master switches, so one being disabled must not make the other's fallback
+# think the generation is already seeded.
+FLAG_RESTORED_OPTION="@sidetabs_flag_restored"
+
+# ...and for NOTES (`note.sh restore`), again a flag of its own so the three
+# restores stay independent. There is no guard to go with it of the kind the
+# flag restore needs below: a note sync never removes the row of a window that
+# merely has no note yet, so a sync landing mid-restore cannot hurt the store.
+NOTE_RESTORED_OPTION="@sidetabs_note_restored"
+
+# Global flag held for the DURATION of a flag restore (flag_restore.sh, both
+# delivery paths). flag_store.sh stands down while it is "1", because the store
+# is a whole-state SNAPSHOT: a sync landing between "the windows exist" and
+# "their flags have been re-seeded" would record every one of them as
+# legitimately unflagged and DELETE the very rows the replay was about to use.
+# window-renamed[1] and session-renamed[1] both fire flag_store.sh sync, and
+# either can land in that gap, so the gap has to be closed rather than hoped
+# past.
+#
+# WHY THIS IS NOT @sidetabs_restoring. The resurrect path is already covered by
+# that one (resurrect_pre.sh raises it before the restore and resurrect_post.sh
+# drops it after), but it means MORE than "a flag replay is in flight":
+# create_sidebar.sh also stands down while it is set, so raising it around the
+# client-attached `boot` restore — which runs on an ordinary, fully-live server
+# that continuum declined to restore into — would silently stop sidebars being
+# created for the duration. One flag per meaning: this one says only "do not
+# snapshot the flag store right now", and it is the one flag_store.sh checks
+# alongside @sidetabs_restoring.
+#
+# flag_restore.sh clears it from a trap, so a failure, a `set -e` abort or a
+# signal cannot leak it: a leaked "1" would leave write-through disabled for the
+# rest of the server's life, and every flag set from then on would be lost at
+# the next restart — the exact data loss this guard exists to prevent.
+FLAG_RESTORING_OPTION="@sidetabs_flag_restoring"
+
 # Per-session user options
+# The session's own colour. SAME encoding as FLAG_OPTION below (a 1-based index
+# into @sidetabs-flag-colors, unset = none) and the SAME palette — sessions
+# deliberately do not get a second colour list, so reordering the palette
+# recolours window flags and session colours alike, in one place.
+#
+# The name is distinct from FLAG_OPTION on purpose, and not just for clarity:
+# tmux resolves #{@opt} up the pane -> window -> session -> global chain, so a
+# session option NAMED @sidetabs_flag would be inherited by every unflagged
+# window in the session and paint every row. A separate name is the only way
+# the two can coexist. (Verified on tmux 3.6b: with @sidetabs_sflag set on a
+# session, `list-windows -a -F '#{@sidetabs_sflag}'` reports it for every window
+# of that session and empty for other sessions — which is exactly the
+# inheritance render.sh relies on to read it for free.)
+SFLAG_OPTION="@sidetabs_sflag"
 COLLAPSED_OPTION="@sidetabs_collapsed"
 WIDTH_OPTION="@sidetabs_width"                   # current expanded width (synced)
 LAST_REFRESH_OPTION="@sidetabs_last_refresh_ms"  # debounce stamp
@@ -104,6 +155,11 @@ DEFAULT_FLAG_COLORS="#ebcb8b #a3be8c #81a1c1 #b48ead #d08770 #8fbcbb #9d7cd8 #8b
 DEFAULT_FLAG_NAMES="yellow green blue purple orange teal indigo slate"
 DEFAULT_FLAG_KEY="C-c"
 DEFAULT_FLAG_PICKER_KEY="M-c"
+# Session colour: a PICKER ONLY, with no cycle counterpart. A window flag is
+# flipped daily (hence C-c's one-press step), but a session colour is set once
+# and then left alone, so stepping through the palette to reach slot 6 would be
+# the wrong affordance for the only way to set it.
+DEFAULT_SESSION_FLAG_KEY="M-s"
 DEFAULT_TIMER_KEY="C-t"
 DEFAULT_TIMER_MENU_KEY="M-t"
 DEFAULT_TIMER_AUTOFOCUS="on"   # auto pause/resume timers on tab focus
@@ -111,10 +167,30 @@ DEFAULT_TIMER_RESTORE="on"     # re-seed timers from the event log after a resto
 DEFAULT_TIMER_LOG="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/timelog.tsv"
 DEFAULT_TIMER_TAGS_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/tags.tsv"
 
+# Flag colours are durable too. FLAG_OPTION above dies with the server (tmux
+# does not save user options, and neither does tmux-resurrect), so every
+# set/clear writes through to this TSV and flag_restore.sh replays it after a
+# restart, matched by session + window NAME. Three tab-separated columns:
+#
+#   session_name <TAB> window_name <TAB> index   -- a WINDOW flag
+#   session_name <TAB>     (empty)   <TAB> index -- a SESSION colour
+#
+# The empty-middle-field shape holds SFLAG_OPTION, the per-session colour: the
+# two states share one file, one lock and one restore pass, and can never
+# collide because a window whose name is the empty string is never recorded at
+# all. The store is rewritten as a whole-state SNAPSHOT on every change (see
+# flag_store.sh) rather than patched row by row, which is what makes a clear
+# persist and a rename self-heal.
+DEFAULT_FLAG_STORE="${XDG_DATA_HOME:-$HOME/.local/share}/tmux-sidetabs/flags.tsv"
+DEFAULT_FLAG_RESTORE="on"      # re-seed flag colours from the store after a restore
+
 # Notes. Unlike flags/timers the note text is durable on its own: every set/clear
 # writes through to a TSV store keyed by (session name, window name), which
-# note.sh restore replays after a server restart. The row glyph is presence-only
-# — the text itself is never interpolated into a render format.
+# note.sh restore replays after a server restart. The key follows the window:
+# a window or session rename re-files the row (`note.sh sync`, on the same
+# rename hooks the flag store uses), so a note id has one row, under its
+# window's current name. The row glyph is presence-only — the text itself is
+# never interpolated into a render format.
 #
 # The option and the store hold a note ID; the TEXT lives in its own file under
 # "${store}.d/<id>". That indirection is what makes a note UNBOUNDED: tmux
@@ -137,3 +213,151 @@ DEFAULT_AGENT_STATUS="on"
 # Done check glyph fg (@sidetabs-agent-done-fg). Nord green; the only agent
 # state that adds COLOR to the row's foreground rather than recoloring the pill.
 DEFAULT_AGENT_DONE_FG="#a3be8c"
+
+# --- Session strip (scripts/strip.sh) ----------------------------------------
+# The bottom status-left strip: one pill per session, coloured by what is
+# actually happening in it. DEFAULT OFF, and while off strip.sh returns before
+# touching a single tmux option — this plugin ships TPM install instructions,
+# and a sidebar plugin must not silently eat somebody's status bar.
+#
+# The strip is GENERATED, not templated: strip.sh emits a literal status-left
+# per session rather than a #{S:} loop, because a loop cannot see its own
+# neighbours and the old workaround (per-session @strip_next options refreshed
+# by hooks that lived only in a running server) went stale across every restart.
+DEFAULT_SESSION_STRIP="off"
+# Debounce stamp for the regenerate, the exact twin of LAST_REFRESH_OPTION.
+# A burst of session churn (a resurrect restore creating eight sessions) must
+# collapse into one regenerate; `strip.sh force` is the escape for the events
+# that must never be dropped.
+STRIP_LAST_OPTION="@sidetabs_strip_last_ms"
+STRIP_DEBOUNCE_MS="100"
+
+# Pill colours. Precedence is bell|attention > session colour > current > idle,
+# the same rule the sidebar's window rows use.
+DEFAULT_STRIP_BELL_BG="#bf616a"
+DEFAULT_STRIP_BELL_FG="#eceff4"
+DEFAULT_STRIP_CURRENT_BG="blue"
+# NOT a user option, deliberately: the design's configuration surface lists
+# @sidetabs-strip-current-bg with no -fg twin, and inventing one here would put
+# an option in the code that ticket 08's README never documents.
+STRIP_CURRENT_FG="black"
+DEFAULT_STRIP_IDLE_BG="brightblack"
+DEFAULT_STRIP_IDLE_FG="white"
+# The bar's own background, which the LAST pill's arrow points into.
+DEFAULT_STRIP_BG="black"
+# The classic powerline separator rule has two halves, and the strip draws both:
+#
+#   backgrounds DIFFER  ->  the SOLID arrow U+E0B0, fg = the left pill's bg. A
+#                           real colour boundary, and the arrow is the left
+#                           pill's own edge cutting into the right one. Not
+#                           configurable: there is one right glyph for a
+#                           boundary and this is it.
+#   backgrounds MATCH   ->  no boundary to draw, so a THIN chevron
+#                           (@sidetabs-strip-sep-glyph, U+E0B1 by default) on
+#                           the shared background instead. A solid arrow here
+#                           would either vanish (drawn in the surface's own
+#                           ink) or read as a heavy dark wedge between two
+#                           pills that are actually the same colour.
+#
+# @sidetabs-strip-sep-fg is the chevron's ink. The default is the SENTINEL
+# "match", meaning "derive it from the pill itself": the pill's own background
+# blended STRIP_SEP_MIX percent of the way toward its own foreground. A grey
+# idle pill therefore gets a muted grey chevron and a black-on-cyan sysinfo pill
+# a deeper cyan one — each a shade OF the pill it sits on rather than a foreign
+# colour laid over it. (The sentinel used to mean "copy the pill's fg", which on
+# a white-on-grey session pill is plain white: stark, and reading as something
+# put on top of the pill rather than part of it.) Any other value is a literal
+# colour and overrides the derivation at every same-background join, which is
+# what makes a one-line taste test possible.
+DEFAULT_STRIP_SEP_FG="match"
+# How far from the pill's background toward its foreground the derived ink sits,
+# in percent. 40 is the point where the chevron is unmistakably a divider and
+# still unmistakably part of the pill. NOT a user option: the configuration
+# surface already has @sidetabs-strip-sep-fg for anyone who wants a different
+# ink, and a second knob for the same decision would only be a way to get it
+# subtly wrong. Integer maths only (bash has no floats):
+#
+#   channel = (bg * (100 - mix) + fg * mix) / 100      truncated
+#
+STRIP_SEP_MIX="40"
+# Named tmux colours resolved to hex, because a blend needs NUMBERS and the
+# strip emits names: "brightblack"/"white" for an idle pill, "blue"/"black" for
+# the current one, "black" for the bar. The values are the nord palette the rest
+# of this file already uses (DEFAULT_FLAG_COLORS, the bell red, the flag fg), so
+# a derived chevron lands in the same colour space as everything around it.
+#
+# A SPACE-DELIMITED string table, not an associative array: macOS ships bash 3.2
+# and has none. Both delimiters matter — the leading and trailing spaces are
+# what make a lookup for " black=" unable to match inside " brightblack=", and
+# what let the value be cut at the next space.
+#
+# A colour that is NOT in here (a "colour123" index, an unknown name, a terminal
+# "default") is simply not resolvable, and the caller falls back to the pill's
+# own foreground rather than guessing at a blend or emitting something invalid.
+STRIP_COLOR_NAMES=" black=#2e3440 red=#bf616a green=#a3be8c yellow=#ebcb8b blue=#81a1c1 magenta=#b48ead cyan=#88c0d0 white=#d8dee9 brightblack=#4c566a brightred=#bf616a brightgreen=#a3be8c brightyellow=#ebcb8b brightblue=#5e81ac brightmagenta=#b48ead brightcyan=#8fbcbb brightwhite=#eceff4 "
+# The glyph for a same-background join. U+E0B1, the thin powerline chevron —
+# the same one sysinfo.sh joins its own measurements with, and one display
+# column wide exactly like U+E0B0, so the width cascade's arithmetic (a join
+# costs 1) does not care which of the two is drawn. Spelled as bytes: macOS
+# ships bash 3.2, where $'\uXXXX' does not exist.
+DEFAULT_STRIP_SEP_GLYPH=$'\xee\x82\xb1'
+# Marker on the CURRENT session's pill, drawn only when that session carries a
+# colour of its own (@sidetabs_sflag). An uncoloured current session already
+# renders in @sidetabs-strip-current-bg, which is what identifies it; a coloured
+# one has given that slot away, so it needs the marker instead. U+258E, spelled
+# as bytes because macOS ships bash 3.2 and $'\uXXXX' is a bash 4.2 feature.
+DEFAULT_STRIP_MARKER=$'\xe2\x96\x8e'
+
+# --- Session strip: the width cascade ----------------------------------------
+# tmux truncates a status line by HARD CUT at the client edge: no ellipsis, no
+# marker, and a 2-column glyph that does not fit is dropped whole. Silent
+# clipping is therefore invisible to the user — you cannot tell a strip that
+# ends at "proj" from one whose last three sessions fell off the edge. So the
+# strip sheds detail in a fixed, announced order instead (see strip.sh section
+# 6b), and these are the knobs that order runs against.
+
+# Hard cap on a session name in the strip (@sidetabs-strip-name-max), applied at
+# stage 0 INDEPENDENTLY of the cascade: 0 means no cap, and any other value
+# truncates every name before the fitting even starts. For someone who wants
+# short names at every width, not only at a narrow one.
+DEFAULT_STRIP_NAME_MAX="0"
+
+# Width budget for a session with NO attached client
+# (@sidetabs-strip-assumed-width). A detached session's strip is still generated
+# — it has to be, or attaching would show a stale one until the next event — but
+# there is no client to ask how wide it is. 200 is wider than most terminals, so
+# a detached session degrades only if it would be unreadable on any of them.
+DEFAULT_STRIP_ASSUMED_WIDTH="200"
+
+# Columns to reserve for a side the plugin does NOT own
+# (@sidetabs-strip-reserve), when that side's width cannot be measured.
+#
+# The plugin always owns status-left (the session pills live there). It owns
+# status-right only when @sidetabs-strip-right-1 is set; otherwise status-right
+# belongs to the user (or to another plugin, or to tmux's own default) and must
+# be RESERVED — reserved, never overrun and never dropped, since the cascade has
+# no right to sacrifice content it did not write.
+#
+# Measuring it: expand that side with #{T:status-right} (which resolves #{...}
+# and strftime %-specs), strip the #[...] style runs, count what is left. That
+# is exact for anything static. It cannot work for a #(shell) job: ticket 06
+# established empirically that those are scheduled ASYNCHRONOUSLY, and the
+# expansion simply drops an unfinished job to the empty string — verified on
+# 3.6b, where an option holding "#(echo hi) %H:%M" expands to " 11:36" with no
+# trace of the job at all. So the presence of a job is detected on the RAW
+# value, not on the expansion, and the reserve falls back to this option.
+#
+# "auto" (the default) = the measured width of everything that COULD be measured
+# plus STRIP_JOB_RESERVE columns for each #(job) that could not — sensible
+# because a status-right is usually mostly literal with one or two short jobs in
+# it. A plain NUMBER overrides that estimate entirely for a side carrying a job,
+# for anyone who knows exactly how wide theirs renders.
+DEFAULT_STRIP_RESERVE="auto"
+# Columns allowed per unmeasurable #(shell) job under "auto". Deliberately
+# generous: under-reserving overruns content the user owns, while over-reserving
+# only degrades our own strip one stage early.
+STRIP_JOB_RESERVE="12"
+
+# The name-truncation ladder (cascade stage 4), tried in this order. 12 keeps
+# most names whole, 4 is still enough to tell "work" from "logs".
+STRIP_NAME_STEPS="12 8 6 4"
