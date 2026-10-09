@@ -25,8 +25,9 @@
 # The store row FOLLOWS THE WINDOW. Its key is (session name, window name)
 # because ids do not survive a restart, so a rename changes the key a note is
 # filed under; `sync` re-files it, and sidetabs.tmux runs that on window-renamed
-# and session-renamed. A note id therefore has exactly one row, under its
-# window's current name — never a second one left behind under an old name.
+# and session-renamed. A note id therefore has one row per window carrying it
+# (one, unless the window is linked into several sessions), under that window's
+# current name — never a second one left behind under an old name.
 #
 # Bound (sidebar-focused): @sidetabs-note-key opens the edit popup.
 # Usage: note.sh <set|clear|edit-popup|sync|restore|gc> [window_id] [text...]
@@ -277,9 +278,15 @@ store_merge() {
                 FLUSHED[k] = 1
                 for (i = 1; i <= NK[k]; i++) { p = KP[k "\t" i]; print p; EMIT[p] = 1 }
             }
-            if ($3 in HELD) next         # live-owned: emitted above or in END
-            if (dropid != "" && ($3 "") == dropid) next
-            if (lv != "" && ($1 "") == ls && ($2 "") == lw && ($3 "") == lv) next
+            # A store saved by an editor with CRLF endings carries a \r on its
+            # last field. Compared raw, "id\r" is not the id: a live note would
+            # gain a second row, and a clear would leave one pointing at the
+            # file it just deleted. Only the COMPARISON is normalized — a row
+            # that is kept is still printed exactly as it was read.
+            v = $3; sub(/\r$/, "", v)
+            if (v in HELD) next          # live-owned: emitted above or in END
+            if (dropid != "" && (v "") == dropid) next
+            if (lv != "" && ($1 "") == ls && ($2 "") == lw && (v "") == lv) next
             print
         }
         END {
@@ -483,27 +490,62 @@ restore)
     set_tmux_option "$NOTE_RESTORED_OPTION" "1"
     STORE="$(store_path)"
     [ -f "$STORE" ] || exit 0
+    NDIR="$(notes_dir)"
     applied="$US"
     changed=0
-    while IFS="$TAB" read -r sname wname wid; do
+    # Same field order as store_live, for the same two reasons (see there): the
+    # note leads behind a literal "n" so an unset option cannot shift the
+    # fields, and the window name trails so a tab inside it lands whole in one
+    # variable. The name is then squashed exactly as the writer squashes it, or
+    # a row would never match the window it was filed for.
+    while IFS="$TAB" read -r nval wid sname wname; do
         [ -n "$wid" ] || continue
+        [ -n "$wname" ] || continue
+        sname="${sname//$TAB/ }"; wname="${wname//$TAB/ }"
         key="${sname}${US}${wname}"
         case "$applied" in *"${US}${key}${US}"*) continue ;; esac
-        note="$(awk -F"$TAB" -v s="$sname" -v w="$wname" \
-            '$1 == s && $2 == w { print $3; exit }' "$STORE" 2>/dev/null)"
+        # Every row filed under this key, in store order; the first USABLE one
+        # is applied. A row pointing at a deleted note file is not usable — it
+        # would light the row's glyph for a note with no text — and it must not
+        # shadow a good row behind it either, so it is stepped over rather than
+        # ending the lookup. (Stepped over, never removed: restore does not
+        # write the store.)
+        #
+        # Names go in through ENVIRON, not -v: awk expands backslash escapes in
+        # a -v value, so a name holding one would never match itself. And each
+        # side is forced to a STRING with "": two numeric-looking names compare
+        # as NUMBERS otherwise, and session `01` would be handed the note filed
+        # under session `1`. The \r a CRLF line ending leaves on the last field
+        # is dropped first; left on, the id would fail valid_id and be applied
+        # as inline text. The store is read as a FILE and awk never exits
+        # early, so there is no writer to SIGPIPE.
+        note=""
+        while IFS= read -r cand; do
+            [ -n "$cand" ] || continue
+            if valid_id "$cand" && [ ! -f "$NDIR/$cand" ]; then
+                continue
+            fi
+            note="$cand"
+            break
+        done <<< "$(s="$sname" w="$wname" awk -F"$TAB" '
+            { sub(/\r$/, "") }
+            NF >= 3 && ($1 "") == ENVIRON["s"] && ($2 "") == ENVIRON["w"] { print $3 }
+        ' "$STORE" 2>/dev/null || true)"
         [ -n "$note" ] || continue
-        # A row pointing at a deleted note file would set the option and light
-        # the row's glyph for a note with no text. Drop it instead.
-        if valid_id "$note" && [ ! -f "$(note_path "$note")" ]; then
-            continue
-        fi
+        # Marked applied BEFORE the live check, so a second window with the same
+        # name is not seeded from the row the first one already owns.
         applied="${applied}${key}${US}"
-        if [ -n "$(get_window_option "$wid" "$NOTE_OPTION" "")" ]; then
-            continue
-        fi
-        set_window_option "$wid" "$NOTE_OPTION" "$note"
+        # Live value wins: it was set this generation and is fresher than the
+        # store.
+        [ -z "${nval#n}" ] || continue
+        # A set that fails skips that window; under `set -e` it would otherwise
+        # abort the whole restore and leave every window after it unseeded.
+        # (tmux 3.6b's `set-option -q` reports a window that vanished since the
+        # listing as SUCCESS, so this is for the versions that do not.)
+        set_window_option "$wid" "$NOTE_OPTION" "$note" 2>/dev/null || continue
         changed=1
-    done <<< "$(tmux list-windows -a -F "#{session_name}${TAB}#{window_name}${TAB}#{window_id}" 2>/dev/null)"
+    done <<< "$(tmux list-windows -a \
+        -F "n#{$NOTE_OPTION}${TAB}#{window_id}${TAB}#{session_name}${TAB}#{window_name}" 2>/dev/null)"
     if [ "$changed" = "1" ]; then
         "$CURRENT_DIR/refresh.sh" force
     fi
@@ -527,7 +569,9 @@ gc)
     if [ -f "$STORE" ]; then
         while IFS= read -r rid; do
             [ -n "$rid" ] && REFS="${REFS}${rid}${US}"
-        done <<< "$(awk -F"$TAB" 'NF>=3 && $3 != "" { print $3 }' "$STORE" 2>/dev/null || true)"
+        # The \r of a CRLF line ending comes off first: left on the id, the file
+        # that row references would look unreferenced and be swept.
+        done <<< "$(awk -F"$TAB" '{ sub(/\r$/, "") } NF>=3 && $3 != "" { print $3 }' "$STORE" 2>/dev/null || true)"
     fi
     while IFS= read -r rid; do
         [ -n "$rid" ] && REFS="${REFS}${rid}${US}"

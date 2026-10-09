@@ -150,6 +150,7 @@ for gopt in \
     "$RESTORING_OPTION" \
     "$TIMER_RESTORED_OPTION" \
     "$FLAG_RESTORED_OPTION" \
+    "$NOTE_RESTORED_OPTION" \
     "$FLAG_RESTORING_OPTION"
 do
     restore_batch="${restore_batch}set-option -gqu ${gopt}

@@ -21,6 +21,9 @@
 #      resurrect path
 #   E  restore never writes the store or touches a note file
 #   F  saves and renames racing each other lose no row
+#   G  names and ids are compared exactly: numeric-looking names (`1` vs `01`),
+#      names holding a backslash or a tab, a dangling row ahead of a valid one,
+#      and a CRLF line ending on a row
 # plus the reported scenario itself, across real server restarts.
 #
 # -f /dev/null is required on every server started here: without it a new server
@@ -533,5 +536,152 @@ if script -q /dev/null true > /dev/null 2>&1; then
 else
     echo "SKIP: D: real client attach (no BSD script(1) to give the client a pty)"
 fi
+
+# ===========================================================================
+# PHASE 4 — names and ids are compared EXACTLY, as strings
+# ===========================================================================
+# Every case here is a way for a restore to hand a window the WRONG note, or
+# none, from a store that is perfectly well-formed (or merely hand-edited):
+#   G1  awk compares two numeric-looking strings as NUMBERS, so a lookup for
+#       session `01` used to match the row filed under session `1` — and a
+#       clear in that window then deleted the other session's note text
+#   G2  `awk -v` expands backslash escapes, so a name holding a literal
+#       backslash-t never matched its own row
+#   G3  a real TAB inside a window name shifted the fields of the live listing
+#   G4  a first row whose file is gone shadowed a valid later row under its key
+#   G5  a CRLF line ending (a store saved by an editor) left a \r on the id
+# No plugin load: this is pure state work, driven through note.sh directly.
+boot hardening
+US=$'\x1f'
+CR="$(printf '\r')"
+ESCNAME='esc\tname'
+TABNAME="tab${TAB}name"
+tmux -L "$SOCKET" new-session -d -s 1 -n foo
+tmux -L "$SOCKET" new-session -d -s 01 -n foo
+for w in "$ESCNAME" "$TABNAME" shadow crlfwin crheld; do
+    tmux -L "$SOCKET" new-window -t main -n "$w"
+done
+# By session AND window name, both compared as strings, and split on a byte no
+# name can hold — `winid` above would trip over every one of these names itself.
+winid_x() {
+    tmux -L "$SOCKET" list-windows -a -F "#{window_id}${US}#{session_name}${US}#{window_name}" 2>/dev/null \
+        | s="$1" n="$2" awk -F"$US" \
+            '($2 "") == ENVIRON["s"] && ($3 "") == ENVIRON["n"] && !seen { print $1; seen = 1 }'
+}
+w1="$(winid_x 1 foo)"; w01="$(winid_x 01 foo)"
+wesc="$(winid_x main "$ESCNAME")"; wtab="$(winid_x main "$TABNAME")"
+wsh="$(winid_x main shadow)"; wcr="$(winid_x main crlfwin)"; wch="$(winid_x main crheld)"
+[ -n "$w1" ] && [ -n "$w01" ] && [ "$w1" != "$w01" ] || fail "setup: need foo in session 1 AND in session 01"
+[ -n "$wesc" ] && [ -n "$wtab" ] || fail "setup: backslash-named or tab-named window missing"
+[ -n "$wsh" ] && [ -n "$wcr" ] && [ -n "$wch" ] || fail "setup: phase 4 windows missing"
+
+for f in numone001 numzero01 escname01 tabname01 goodfile1 crlfgood1 crlfonly1; do
+    printf 'text of %s\n' "$f" > "$NDIR/n1-$f"
+done
+{
+    printf '1\tfoo\tn1-numone001\n'
+    printf '01\tfoo\tn1-numzero01\n'
+    printf 'main\t%s\tn1-escname01\n' "$ESCNAME"
+    # Filed the way the writer files it: a tab in a name is squashed to a space.
+    printf 'main\ttab name\tn1-tabname01\n'
+    # n1-deadfile1 has no file behind it; n1-goodfile1 does.
+    printf 'main\tshadow\tn1-deadfile1\n'
+    printf 'main\tshadow\tn1-goodfile1\n'
+    printf 'main\tcrlfwin\tn1-crlfgood1\r\n'
+    # Referenced by nothing but a CRLF row: no window carries it.
+    printf 'main\tgonecr\tn1-crlfonly1\r\n'
+} >> "$STORE"
+
+run "$PLUGIN_DIR/scripts/note.sh restore"
+sleep 0.5
+
+[ "$(winopt "$w1" @sidetabs_note)" = "n1-numone001" ] \
+    || fail "session 1 did not get its own note: '$(winopt "$w1" @sidetabs_note)'"
+[ "$(winopt "$w01" @sidetabs_note)" = "n1-numzero01" ] \
+    || fail "session 01 was handed another session's note (numeric compare?): '$(winopt "$w01" @sidetabs_note)'"
+pass "G: sessions named 1 and 01 each get their OWN note back"
+
+[ "$(winopt "$wesc" @sidetabs_note)" = "n1-escname01" ] \
+    || fail "a name holding a literal backslash-t did not match its row: '$(winopt "$wesc" @sidetabs_note)'"
+pass "G: a window name containing a backslash still matches its row"
+
+[ "$(winopt "$wtab" @sidetabs_note)" = "n1-tabname01" ] \
+    || fail "a name holding a real TAB did not match its row: '$(winopt "$wtab" @sidetabs_note)'"
+pass "G: a window name containing a tab still matches its row"
+
+[ "$(winopt "$wsh" @sidetabs_note)" = "n1-goodfile1" ] \
+    || fail "a dangling first row shadowed the valid row behind it: '$(winopt "$wsh" @sidetabs_note)'"
+hasrow main shadow n1-deadfile1 || fail "restore pruned the dangling row (it must never write the store)"
+pass "G: a dangling first row no longer shadows a valid row under the same name"
+
+[ "$(winopt "$wcr" @sidetabs_note)" = "n1-crlfgood1" ] \
+    || fail "a CRLF row was not applied as its id: '$(winopt "$wcr" @sidetabs_note | od -c | head -2)'"
+pass "G: a CRLF row restores as the id it names, not as inline text ending in \\r"
+
+# The WRITE side agrees: a sync must keep those keys apart and file the tab name
+# the way it was filed before.
+run "$PLUGIN_DIR/scripts/note.sh sync"
+sleep 0.3
+hasrow 1 foo n1-numone001 || fail "a sync lost session 1's row: $(cat "$STORE")"
+hasrow 01 foo n1-numzero01 || fail "a sync lost session 01's row: $(cat "$STORE")"
+[ "$(idrows n1-numone001)" = "1" ] && [ "$(idrows n1-numzero01)" = "1" ] \
+    || fail "a sync conflated sessions 1 and 01: $(cat "$STORE")"
+hasrow main "$ESCNAME" n1-escname01 || fail "a sync rewrote the backslash name: $(cat "$STORE")"
+hasrow main 'tab name' n1-tabname01 || fail "a sync re-filed the tab name differently: $(cat "$STORE")"
+[ "$(idrows n1-tabname01)" = "1" ] || fail "a sync duplicated the tab-named window's row"
+pass "G: a sync keeps numeric-looking, backslash and tab names filed exactly as they were"
+
+# "One row per note" is really one row per window CARRYING it: a window linked
+# into a second session is live under two keys, and is filed under both.
+tmux -L "$SOCKET" link-window -s "$wsh" -t 01:
+run "$PLUGIN_DIR/scripts/note.sh sync"
+sleep 0.3
+hasrow main shadow n1-goodfile1 || fail "linking a window lost its original row: $(cat "$STORE")"
+hasrow 01 shadow n1-goodfile1 || fail "a linked window was not filed under its second session: $(cat "$STORE")"
+[ "$(idrows n1-goodfile1)" = "2" ] \
+    || fail "expected one row per session for a linked window, got $(idrows n1-goodfile1)"
+pass "G: a window linked into two sessions is filed once under each"
+
+# --- G5. CRLF in the merge ---------------------------------------------------
+# crlf_row <id>: give the row holding <id> a CRLF ending, as an editor would.
+crlf_row() {
+    awk -F"$TAB" -v id="$1" -v cr="$CR" \
+        '{ if ($3 == id) printf "%s%s\n", $0, cr; else print }' "$STORE" > "$WORK/store.crlf"
+    mv "$WORK/store.crlf" "$STORE"
+    grep -q "$1$CR\$" "$STORE" || fail "setup: could not give $1 a CRLF row"
+}
+# How many store lines mention an id at all, whatever follows it.
+mentions() { grep -c "$1" "$STORE" || true; }
+
+run "$PLUGIN_DIR/scripts/note.sh set $wch held behind a carriage return"
+sleep 0.4
+ch_id="$(noteid "$wch" "crheld")"
+crlf_row "$ch_id"
+run "$PLUGIN_DIR/scripts/note.sh sync"
+sleep 0.3
+[ "$(mentions "$ch_id")" = "1" ] \
+    || fail "a CRLF row was not recognised as the live note's own: $(mentions "$ch_id") rows for one note"
+hasrow main crheld "$ch_id" || fail "the live note's row is not the clean one: $(grep "$ch_id" "$STORE" | od -c | head -3)"
+pass "G: a CRLF row for a live note is re-filed, not duplicated"
+
+crlf_row "$ch_id"
+run "$PLUGIN_DIR/scripts/note.sh clear $wch"
+sleep 0.4
+[ ! -f "$NDIR/$ch_id" ] || fail "setup: the clear did not delete the note file"
+[ "$(mentions "$ch_id")" = "0" ] \
+    || fail "a cleared note's CRLF row survived, pointing at its deleted file: $(grep "$ch_id" "$STORE" | od -c | head -3)"
+run "$PLUGIN_DIR/scripts/note.sh restore"
+sleep 0.4
+[ -z "$(winopt "$wch" @sidetabs_note)" ] \
+    || fail "a restore re-attached a cleared note: '$(winopt "$wch" @sidetabs_note)'"
+pass "G: clearing a note removes its CRLF row too, and nothing brings it back"
+
+# gc reads ids out of the same rows: a file only a CRLF row references is
+# REFERENCED, and sweeping it would delete text over a line ending.
+grep -q "n1-crlfonly1$CR\$" "$STORE" || fail "setup: the gc fixture's row lost its CRLF ending"
+run "$PLUGIN_DIR/scripts/note.sh gc"
+sleep 0.4
+[ -f "$NDIR/n1-crlfonly1" ] || fail "gc swept a note file a CRLF row still references"
+pass "G: gc keeps a note file that only a CRLF row references"
 
 echo "ALL NOTE RENAME TESTS PASSED"

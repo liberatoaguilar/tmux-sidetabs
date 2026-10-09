@@ -212,6 +212,12 @@ pass "setup: the generated per-session status-left shadows the user's global one
 [ "$(sopt beta status-right)" = "$SESSION_RIGHT" ] \
     || fail "setup: strip.sh wrote a status-right it does not own"
 
+# The once-per-generation restore claims, as a server that has already restored
+# carries them. They are checked after the uninstall, below.
+for claim in @sidetabs_timer_restored @sidetabs_flag_restored @sidetabs_note_restored; do
+    t2 set-option -g "$claim" 1
+done
+
 # --- 3b. uninstall restores the status line ---------------------------------
 t2 run-shell "$PLUGIN_DIR/scripts/uninstall.sh"
 sleep 0.5
@@ -230,6 +236,13 @@ pass "uninstall unsets status-left/-length on every session; the global shows th
 # left behind either.
 [ -z "$(t2 show-option -gqv @sidetabs_strip_last_ms)" ] \
     || fail "the strip's debounce stamp survived uninstall"
+# Nor may a restore claim: a leftover "1" makes a REINSTALL on the same young
+# server believe this generation is already seeded, so its client-attached boot
+# fallback stands down and that restore never happens.
+for claim in @sidetabs_timer_restored @sidetabs_flag_restored @sidetabs_note_restored; do
+    [ -z "$(t2 show-option -gqv "$claim")" ] \
+        || fail "the restore claim $claim survived uninstall: '$(t2 show-option -gqv "$claim")'"
+done
 pass "the plugin's own bookkeeping globals are cleared by uninstall"
 
 # --- 3c. a status-right the plugin never owned is NOT touched ---------------
